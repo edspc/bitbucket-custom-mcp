@@ -14,5 +14,3 @@
 4. **Commit only on `NO FINDINGS`.** Otherwise fix the findings, re-run lint
    and tests and review again. Disagreeing with a finding is decided by the
    user, not by the agent.
-5. Commit only when the user asks, into a ticket branch, with the subject
-   `<TICKET>: <summary>`.
