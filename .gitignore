@@ -1,0 +1,12 @@
+bin/
+/server
+*.test
+*.out
+.scratch/
+.env
+.env.*
+.idea/
+.vscode/
+.claude/settings.local.json
+.claude/.cc-writes/
+.DS_Store
