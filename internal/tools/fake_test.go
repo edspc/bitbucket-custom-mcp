@@ -38,19 +38,34 @@ type fakeBitbucket struct {
 	pages      *stubPages
 	tools      *tools // set by connect, for tests that inspect or tune the server's bookkeeping
 
-	runs            map[string][]*bitbucket.Pipeline // by repo, oldest first
-	steps           map[string][]bitbucket.Step      // by pipeline UUID
-	logs            map[string]string                // by step UUID
-	runBodies       []string                         // bodies of the run requests, as sent
-	listQueries     []string                         // queries of the pipeline list requests
-	logRanges       []string                         // Range headers of the log requests
-	logStorage      bool                             // logs are redirected to long-term storage
-	pipelineGet     int                              // GETs of single pipelines so far
-	failPipelineGet bool                             // GETs of single pipelines answer 500
-	schedules       map[string][]bitbucket.Schedule  // by repo
+	runs            map[string][]*bitbucket.Pipeline    // by repo, oldest first
+	steps           map[string][]bitbucket.Step         // by pipeline UUID
+	logs            map[string]string                   // by step UUID
+	runBodies       []string                            // bodies of the run requests, as sent
+	listQueries     []string                            // queries of the pipeline list requests
+	logRanges       []string                            // Range headers of the log requests
+	logStorage      bool                                // logs are redirected to long-term storage
+	pipelineGet     int                                 // GETs of single pipelines so far
+	failPipelineGet bool                                // GETs of single pipelines answer 500
+	schedules       map[string][]bitbucket.Schedule     // by repo
+	pullRequests    map[string]*bitbucket.PullRequest   // by repo/ID
+	prStatuses      map[string][]bitbucket.CommitStatus // by repo/ID
+	prChanges       map[string][]fakeChange             // by repo/ID
+	diffQueries     []string                            // queries of the diff requests
+	prRequests      []string                            // pull request requests, by what they ask for
+	prListQueries   []string                            // queries of the pull request list requests
+	diffStatus      int                                 // a failure the diff answers with
+	diffstatStatus  int                                 // a failure the diffstat answers with
 	// onPipelineGet runs, with the lock held, before the n-th GET of a single pipeline is
 	// answered, so a test can move a pipeline along while it is watched.
 	onPipelineGet func(n int)
+}
+
+// fakeChange is how a pull request changes one file.
+type fakeChange struct {
+	path string
+	stat bitbucket.DiffStat
+	diff string // its part of the diff
 }
 
 // stubPages stands in for the local secret page server, so tests open no sockets.
@@ -118,6 +133,10 @@ func newFake() *fakeBitbucket {
 		steps:      map[string][]bitbucket.Step{},
 		logs:       map[string]string{},
 		schedules:  map[string][]bitbucket.Schedule{},
+
+		pullRequests: map[string]*bitbucket.PullRequest{},
+		prStatuses:   map[string][]bitbucket.CommitStatus{},
+		prChanges:    map[string][]fakeChange{},
 	}
 }
 
@@ -307,6 +326,74 @@ func (f *fakeBitbucket) handler(t *testing.T) http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
+	mux.HandleFunc("GET "+repo+"/pullrequests", func(w http.ResponseWriter, r *http.Request) {
+		f.prListQueries = append(f.prListQueries, r.URL.RawQuery)
+		q := r.URL.Query()
+		var out []*bitbucket.PullRequest
+		for key, pr := range f.pullRequests {
+			if strings.HasPrefix(key, r.PathValue("repo")+"/") && slices.Contains(q["state"], pr.State) && filterPicks(t, q.Get("q"), pr) {
+				out = append(out, pr)
+			}
+		}
+		slices.SortFunc(out, func(a, b *bitbucket.PullRequest) int { return strings.Compare(b.UpdatedOn, a.UpdatedOn) })
+		if n, _ := strconv.Atoi(q.Get("pagelen")); n < len(out) {
+			out = out[:n]
+		}
+		page(w, out)
+	})
+	prKey := func(r *http.Request) string { return r.PathValue("repo") + "/" + r.PathValue("id") }
+	mux.HandleFunc("GET "+repo+"/pullrequests/{id}", func(w http.ResponseWriter, r *http.Request) {
+		f.prRequests = append(f.prRequests, "pull request")
+		pr, ok := f.pullRequests[prKey(r)]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		writeJSON(w, pr)
+	})
+	mux.HandleFunc("GET "+repo+"/pullrequests/{id}/statuses", func(w http.ResponseWriter, r *http.Request) {
+		f.prRequests = append(f.prRequests, "statuses")
+		page(w, f.prStatuses[prKey(r)])
+	})
+	// Like Bitbucket, a pull request redirects to the diff and the diffstat of its commits.
+	for _, kind := range []string{"diff", "diffstat"} {
+		mux.HandleFunc("GET "+repo+"/pullrequests/{id}/"+kind, func(w http.ResponseWriter, r *http.Request) {
+			f.prRequests = append(f.prRequests, kind+" redirect")
+			w.Header().Set("Location", fmt.Sprintf("%s/repositories/ws/%[2]s/%[3]s/ws/%[2]s:src%%0Ddst?from_pullrequest_id=%[4]s&topic=true",
+				bitbucket.APIURL, r.PathValue("repo"), kind, r.PathValue("id")))
+			w.WriteHeader(http.StatusFound)
+		})
+	}
+	changes := func(r *http.Request) []fakeChange {
+		return f.prChanges[r.PathValue("repo")+"/"+r.URL.Query().Get("from_pullrequest_id")]
+	}
+	mux.HandleFunc("GET "+repo+"/diff/{spec...}", func(w http.ResponseWriter, r *http.Request) {
+		f.diffQueries = append(f.diffQueries, r.URL.RawQuery)
+		f.prRequests = append(f.prRequests, "diff")
+		if f.diffStatus != 0 {
+			w.WriteHeader(f.diffStatus)
+			return
+		}
+		paths := r.URL.Query()["path"]
+		for _, c := range changes(r) {
+			if len(paths) == 0 || slices.Contains(paths, c.path) {
+				_, _ = io.WriteString(w, c.diff)
+			}
+		}
+	})
+	mux.HandleFunc("GET "+repo+"/diffstat/{spec...}", func(w http.ResponseWriter, r *http.Request) {
+		f.prRequests = append(f.prRequests, "diffstat")
+		if f.diffstatStatus != 0 {
+			w.WriteHeader(f.diffstatStatus)
+			return
+		}
+		stats := []bitbucket.DiffStat{}
+		for _, c := range changes(r) {
+			stats = append(stats, c.stat)
+		}
+		page(w, stats)
+	})
+
 	mux.HandleFunc("POST "+repo+"/pipelines/{$}", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		f.runBodies = append(f.runBodies, string(body))
@@ -398,6 +485,34 @@ func (f *fakeBitbucket) handler(t *testing.T) http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+// filterPicks reports whether pr meets the branch conditions of a pull request filter, the only
+// ones the tools send: `source.branch.name = "…"` and the like, joined by AND.
+func filterPicks(t *testing.T, filter string, pr *bitbucket.PullRequest) bool {
+	for condition := range strings.SplitSeq(filter, " AND ") {
+		if condition == "" {
+			continue
+		}
+		field, quoted, _ := strings.Cut(condition, " = ")
+		name, err := strconv.Unquote(quoted)
+		if err != nil {
+			t.Errorf("filter %q: %v", filter, err)
+		}
+		switch field {
+		case "source.branch.name":
+			if pr.Source.Branch.Name != name {
+				return false
+			}
+		case "destination.branch.name":
+			if pr.Destination.Branch.Name != name {
+				return false
+			}
+		default:
+			t.Errorf("unexpected filter %q", condition)
+		}
+	}
+	return true
 }
 
 // handlerTransport serves requests in-process, so tests need no network listener.

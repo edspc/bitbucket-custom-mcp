@@ -81,13 +81,7 @@ func (c *Client) StepLog(ctx context.Context, repo, pipelineUUID, stepUUID strin
 
 // getTail asks for the last maxBytes of rawURL.
 func (c *Client) getTail(ctx context.Context, rawURL string, auth func(*http.Request), maxBytes int) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	auth(req)
-	req.Header.Set("Range", "bytes=-"+strconv.Itoa(maxBytes))
-	return c.http.Do(req)
+	return c.get(ctx, rawURL, auth, http.Header{"Range": {"bytes=-" + strconv.Itoa(maxBytes)}})
 }
 
 // readTail reads r to the end and keeps its last n bytes, for servers that ignore the range.

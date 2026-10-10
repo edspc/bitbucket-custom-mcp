@@ -16,9 +16,12 @@ type Pipeline struct {
 	Target      PipelineTarget `json:"target"`
 	CreatedOn   string         `json:"created_on"`
 	CompletedOn string         `json:"completed_on"`
-	Creator     struct {
-		DisplayName string `json:"display_name"`
-	} `json:"creator"`
+	Creator     Account        `json:"creator"`
+}
+
+// Account is a user as other objects refer to them.
+type Account struct {
+	DisplayName string `json:"display_name"`
 }
 
 // State is the state of a pipeline or a step: PENDING, READY, IN_PROGRESS with a stage such as

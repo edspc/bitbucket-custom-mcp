@@ -187,6 +187,7 @@ func TestWebURLs(t *testing.T) {
 		c.PipelineURL("repo-a", 42):      "https://bitbucket.org/ws/repo-a/pipelines/results/42",
 		c.StepURL("repo-a", 42, "{s-1}"): "https://bitbucket.org/ws/repo-a/pipelines/results/42/steps/%7Bs-1%7D",
 		c.AccessTokensPage("repo-a"):     "https://bitbucket.org/ws/repo-a/admin/access-tokens",
+		c.PullRequestURL("repo-a", 7):    "https://bitbucket.org/ws/repo-a/pull-requests/7",
 	} {
 		if got != want {
 			t.Errorf("URL = %s, want %s", got, want)

@@ -152,6 +152,26 @@ func newServer(impl *mcp.Implementation, t *tools) *mcp.Server {
 		Description: "Delete a schedule of a repository by its UUID from list_schedules.",
 	}, t.deleteSchedule)
 
+	mcp.AddTool(s, &mcp.Tool{
+		Name:  "get_pull_request",
+		Title: "Get a pull request",
+		Description: "Get a pull request by its ID: title, description, state, author, the source branch with " +
+			"the changes and the destination branch they merge into, reviewers and their decisions, build " +
+			"results such as pipeline runs, and the paths of the changed files with line counts, 200 a page: " +
+			"pass files_next back as files_from for the next page. With paths, get the diff of those files " +
+			"instead; a diff over 40 KB comes in parts: pass diff_next back as diff_from, with the same paths, " +
+			"to read the next one.",
+		Annotations: readOnly,
+	}, t.getPullRequest)
+	mcp.AddTool(s, &mcp.Tool{
+		Name:  "list_pull_requests",
+		Title: "List pull requests",
+		Description: "List pull requests of a repository, the most recently updated first: open ones, or those in " +
+			"another state, optionally only from a source branch or into a destination branch. " +
+			"get_pull_request shows the description, reviewers, builds and changed files of one, and their diffs.",
+		Annotations: readOnly,
+	}, t.listPullRequests)
+
 	s.AddResourceTemplate(&mcp.ResourceTemplate{
 		Name:        "pipeline",
 		Title:       "Pipeline status",

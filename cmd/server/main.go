@@ -29,7 +29,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 		return err
 	}
 	bb := bitbucket.New(&http.Client{Timeout: 30 * time.Second}, cfg)
-	s := tools.NewServer(ctx, &mcp.Implementation{Name: "bitbucket-custom-mcp", Version: "0.2.0"}, bb, log)
+	s := tools.NewServer(ctx, &mcp.Implementation{Name: "bitbucket-custom-mcp", Version: "0.3.0"}, bb, log)
 	log.Info("serving MCP over stdio", "workspace", cfg.Workspace)
 	return s.Run(ctx, &mcp.StdioTransport{})
 }

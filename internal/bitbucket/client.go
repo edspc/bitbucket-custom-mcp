@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"strings"
@@ -137,13 +138,51 @@ func (c *Client) send(ctx context.Context, method, rawURL string, auth func(*htt
 	return nil
 }
 
+// get sends a GET of rawURL with the given headers and returns the response as it comes.
+func (c *Client) get(ctx context.Context, rawURL string, auth func(*http.Request), header http.Header) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	auth(req)
+	maps.Copy(req.Header, header)
+	return c.http.Do(req)
+}
+
+// inAPI reports whether rawURL is in the API, the only place credentials are sent to.
+func inAPI(rawURL string) bool { return strings.HasPrefix(rawURL, APIURL+"/") }
+
+// redirectTarget returns where the API redirects a GET of path, such as the diff of a pull
+// request to the diff of its commits.
+func (c *Client) redirectTarget(ctx context.Context, path string) (*url.URL, error) {
+	resp, err := c.get(ctx, APIURL+path, c.basicAuth, nil)
+	if err != nil {
+		return nil, fmt.Errorf("bitbucket GET %s: %w", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		return nil, newAPIError(http.MethodGet, path, resp)
+	}
+	target, err := resp.Location()
+	// The target gets the credentials too.
+	if err != nil || !inAPI(target.String()) {
+		return nil, fmt.Errorf("bitbucket GET %s: expected a redirect within the API, got %d", path, resp.StatusCode)
+	}
+	return target, nil
+}
+
 // list follows Bitbucket's `next` links and returns all values of a paginated collection.
 func list[T any](ctx context.Context, c *Client, path string) ([]T, error) {
+	return listFrom[T](ctx, c, path, APIURL+path+"?pagelen=100")
+}
+
+// listFrom is list starting from the API URL of the first page; path names the collection in
+// errors.
+func listFrom[T any](ctx context.Context, c *Client, path, next string) ([]T, error) {
 	var all []T
-	next := APIURL + path + "?pagelen=100"
 	for next != "" {
 		// Credentials go only to the API host, whatever `next` says.
-		if !strings.HasPrefix(next, APIURL+"/") {
+		if !inAPI(next) {
 			return nil, fmt.Errorf("bitbucket GET %s: unexpected pagination link outside the API", path)
 		}
 		var page struct {

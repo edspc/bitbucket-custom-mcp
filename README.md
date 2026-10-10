@@ -45,7 +45,8 @@ literal value in a committed file such as `.mcp.json`.
 The API token needs these scopes: `read:repository:bitbucket`,
 `admin:repository:bitbucket`, `write:ssh-key:bitbucket`,
 `delete:ssh-key:bitbucket`, `read:pipeline:bitbucket`,
-`write:pipeline:bitbucket`, `admin:pipeline:bitbucket`.
+`write:pipeline:bitbucket`, `admin:pipeline:bitbucket`,
+`read:pullrequest:bitbucket`.
 
 ## Tools
 
@@ -169,6 +170,54 @@ year (`0 0 2 * * ? *` runs at 02:00 UTC every day).
   added twice.
 - `delete_schedule` deletes the `schedule` with the given UUID from
   `list_schedules`.
+
+### Pull requests
+
+`list_pull_requests` lists the pull requests of `repo`, the most recently
+updated first (`limit`, 10 by default and at most 50): open ones, or those
+in `state` `MERGED`, `DECLINED`, `SUPERSEDED` or `ALL`; `source_branch` and
+`destination_branch` keep those from or into a branch. Each comes with its
+ID, title, state, draft flag, author, source and destination branches with
+their commits and repositories, dates, comment and open task counts, and its
+page on bitbucket.org. A call costs one API request.
+
+`get_pull_request` describes pull request `pull_request` (its ID) of
+`repo`:
+
+- title, description, state (`OPEN`, `MERGED`, `DECLINED` or `SUPERSEDED`),
+  draft flag, author, dates, comment and open task counts, how it was closed
+  (close source branch, merge commit, closed by, decline reason), and its
+  page on bitbucket.org;
+- the source branch with its commit and repository (another one for a pull
+  request from a fork), and the destination branch it merges into;
+- reviewers and other participants who decided, with their state
+  (`approved`, `changes_requested`, or `pending` for a reviewer);
+- build results reported for it, such as pipeline runs;
+- the paths of the changed files with their status and added and removed
+  lines, and how many there are, 200 a page: `files_next` is passed back as
+  `files_from` for the next page. Later pages leave out the description,
+  reviewers and builds.
+
+With `paths`, some of the changed files, it returns their diff instead: of
+the source branch against the commit where it forked from the destination,
+as the pull request page shows it, with the fields above except the
+description, reviewers, builds and files. A diff over 40 KB comes in parts,
+cut at a line end unless a single line is longer: the result then has
+`diff_next`, which is passed back as `diff_from` (with the same `paths`) to
+read the next part. Each part downloads the diff up to its end.
+
+A part of a diff or a page of files is refused once the pull request has new
+commits, so they never mix two versions; start again without `diff_from` or
+`files_from` then.
+
+These sizes keep a result of ordinary code and paths under the 25,000 tokens
+Claude Code allows a tool result by default; very long paths or content dense
+in tokens may still go over (`MAX_MCP_OUTPUT_TOKENS` raises the limit).
+
+Bitbucket gives up on the file list or the diff of a very large pull request;
+the result then says why in `files_error` or `diff_error` and still holds the
+rest, and fewer `paths` ask for a smaller diff. A call without `paths` costs
+at least four API requests, a later page of files or a part of a diff three.
 
 ### Status subscriptions
 
