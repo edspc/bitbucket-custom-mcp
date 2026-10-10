@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"bitbucket-custom-mcp/internal/bitbucket"
+	"github.com/edspc/bitbucket-custom-mcp/internal/bitbucket"
 )
 
 func keyArgs(force bool) map[string]any {

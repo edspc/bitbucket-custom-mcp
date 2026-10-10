@@ -12,11 +12,13 @@ behalf of the user.
 
 ## Running commands
 
-| Task  | Command                                       |
-|-------|-----------------------------------------------|
-| Run   | `go run ./cmd/server`                         |
-| Lint  | `golangci-lint run ./...`                     |
-| Tests | `go test -race ./...`                         |
+| Task    | Command                                                    |
+|---------|------------------------------------------------------------|
+| Run     | `go run ./cmd/server`                                      |
+| Build   | `make build` — binary in `bin/`                            |
+| Install | `make install` — copies it to `~/.local/bin` (override with `BINDIR=…`) |
+| Lint    | `make lint` (`golangci-lint run ./...`)                    |
+| Tests   | `make test` (`go test -race ./...`)                        |
 
 ## Configuration
 
@@ -88,10 +90,10 @@ webhooks), which catches a token created in another repository.
 
 ## Setup in Claude Code
 
-1. Build the binary (`bin/` is git-ignored):
+1. Build and install the binary into `~/.local/bin`:
 
    ```sh
-   go build -o bin/bitbucket-custom-mcp ./cmd/server
+   make install
    ```
 
 2. Store the Atlassian API token in 1Password and copy its secret reference,
@@ -100,13 +102,14 @@ webhooks), which catches a token created in another repository.
    the desktop app integration lets you approve access with biometrics.
 
 3. Register the server for your user. Only the `op://` reference lands in
-   `~/.claude.json`, never the token itself:
+   `~/.claude.json`, never the token itself. The binary path must be absolute
+   (`~` is not expanded inside the JSON):
 
    ```sh
    claude mcp add-json --scope user bitbucket-custom '{
      "type": "stdio",
      "command": "op",
-     "args": ["run", "--no-masking", "--", "/abs/path/to/bin/bitbucket-custom-mcp"],
+     "args": ["run", "--no-masking", "--", "/Users/<you>/.local/bin/bitbucket-custom-mcp"],
      "env": {
        "BITBUCKET_WORKSPACE": "<workspace>",
        "BITBUCKET_EMAIL": "<atlassian-email>",

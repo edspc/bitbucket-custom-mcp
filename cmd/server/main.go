@@ -11,8 +11,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"bitbucket-custom-mcp/internal/bitbucket"
-	"bitbucket-custom-mcp/internal/tools"
+	"github.com/edspc/bitbucket-custom-mcp/internal/bitbucket"
+	"github.com/edspc/bitbucket-custom-mcp/internal/tools"
 )
 
 func main() {

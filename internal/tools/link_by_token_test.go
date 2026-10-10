@@ -10,7 +10,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"bitbucket-custom-mcp/internal/bitbucket"
+	"github.com/edspc/bitbucket-custom-mcp/internal/bitbucket"
 )
 
 // fakeUser answers URL elicitation like a person: agrees to open the page and pastes token

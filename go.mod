@@ -1,4 +1,4 @@
-module bitbucket-custom-mcp
+module github.com/edspc/bitbucket-custom-mcp
 
 go 1.27.1
 
