@@ -56,18 +56,42 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("bitbucket %s %s: %d: %s", e.Method, e.Path, e.Status, msg)
 }
 
+func newAPIError(method, path string, resp *http.Response) *APIError {
+	apiErr := &APIError{Method: method, Path: path, Status: resp.StatusCode}
+	var payload struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.NewDecoder(io.LimitReader(resp.Body, maxErrorBody)).Decode(&payload) == nil {
+		apiErr.Message = payload.Error.Message
+	}
+	return apiErr
+}
+
 // IsStatus reports whether err is an APIError with the given HTTP status.
 func IsStatus(err error, status int) bool {
 	var apiErr *APIError
 	return errors.As(err, &apiErr) && apiErr.Status == status
 }
 
-func (c *Client) repoPath(repo string, parts ...string) string {
-	p := "/repositories/" + url.PathEscape(c.cfg.Workspace) + "/" + url.PathEscape(repo)
-	for _, part := range parts {
-		p += "/" + url.PathEscape(part)
+// escapedPath joins path segments, each escaped, into a URL path.
+func escapedPath(segments ...string) string {
+	var b strings.Builder
+	for _, s := range segments {
+		b.WriteString("/")
+		b.WriteString(url.PathEscape(s))
 	}
-	return p
+	return b.String()
+}
+
+func (c *Client) repoPath(repo string, parts ...string) string {
+	return escapedPath(append([]string{"repositories", c.cfg.Workspace, repo}, parts...)...)
+}
+
+// repoWebURL is a page of repo on the Bitbucket website.
+func (c *Client) repoWebURL(repo string, parts ...string) string {
+	return WebURL + escapedPath(append([]string{c.cfg.Workspace, repo}, parts...)...)
 }
 
 func (c *Client) basicAuth(req *http.Request) { req.SetBasicAuth(c.cfg.Email, c.cfg.Token) }
@@ -102,16 +126,7 @@ func (c *Client) send(ctx context.Context, method, rawURL string, auth func(*htt
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 300 {
-		apiErr := &APIError{Method: method, Path: req.URL.Path, Status: resp.StatusCode}
-		var payload struct {
-			Error struct {
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if json.NewDecoder(io.LimitReader(resp.Body, maxErrorBody)).Decode(&payload) == nil {
-			apiErr.Message = payload.Error.Message
-		}
-		return apiErr
+		return newAPIError(method, req.URL.Path, resp)
 	}
 	if out == nil {
 		return nil

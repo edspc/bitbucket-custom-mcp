@@ -5,18 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/edspc/bitbucket-custom-mcp/internal/bitbucket"
 )
 
-const (
-	scopeRepository = "repository"
-	scopeDeployment = "deployment"
-	tokenInputID    = "token"
-)
+const tokenField = "token"
 
 type linkByTokenInput struct {
 	SourceRepo   string   `json:"source_repo" jsonschema:"slug of the repository the access token is created in"`
@@ -38,36 +33,22 @@ func validPermission(p string) bool {
 	return false
 }
 
-// validVariableName mirrors Bitbucket's rule for variable names, checked up front so the user
-// does not create a token that then cannot be stored.
-func validVariableName(name string) bool {
-	for i, r := range name {
-		letter := r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
-		if !letter && (i == 0 || r < '0' || r > '9') {
-			return false
-		}
-	}
-	return name != ""
+func (in linkByTokenInput) place() variablePlace {
+	return variablePlace{Scope: in.Scope, Repo: in.TargetRepo, Environment: in.Environment}
 }
 
 func (in linkByTokenInput) validate() error {
 	if err := checkRepoPair(in.SourceRepo, in.TargetRepo); err != nil {
 		return err
 	}
-	if !validVariableName(in.VariableName) {
-		return fmt.Errorf("variable_name %q must contain only letters, digits and underscores and must not start with a digit", in.VariableName)
+	if err := checkVariableName("variable_name", in.VariableName); err != nil {
+		return err
 	}
-	switch in.Scope {
-	case scopeRepository:
-		if in.Environment != "" {
-			return errors.New("environment is only used with scope 'deployment'")
-		}
-	case scopeDeployment:
-		if in.Environment == "" {
-			return errors.New("environment is required with scope 'deployment'")
-		}
-	default:
+	if in.Scope != scopeRepository && in.Scope != scopeDeployment {
 		return fmt.Errorf("scope must be %q or %q, got %q", scopeRepository, scopeDeployment, in.Scope)
+	}
+	if err := in.place().validate(); err != nil {
+		return err
 	}
 	if len(in.Permissions) == 0 {
 		return errors.New("permissions are required")
@@ -80,108 +61,66 @@ func (in linkByTokenInput) validate() error {
 	return nil
 }
 
-func (in linkByTokenInput) place() string {
-	if in.Scope == scopeDeployment {
-		return fmt.Sprintf("deployment environment %q of %s", in.Environment, in.TargetRepo)
+func (t *tools) linkByToken(ctx context.Context, req *mcp.CallToolRequest, in linkByTokenInput) (*mcp.CallToolResult, statusResult, error) {
+	page, err := t.claimSecrets(req, in)
+	if err != nil {
+		return nil, statusResult{}, err
 	}
-	return "repository variables of " + in.TargetRepo
-}
+	defer page.close()
 
-func (t *tools) linkByToken(ctx context.Context, req *mcp.CallToolRequest, in linkByTokenInput) (*mcp.CallToolResult, linkResult, error) {
-	// A call coming back from the token page claims the page before anything can fail.
-	resp, cameBack := req.Params.InputResponses[tokenInputID]
-	var page *pendingToken
-	if cameBack {
-		p, err := t.claimPage(req.Params.RequestState, in)
-		if err != nil {
-			return nil, linkResult{}, err
-		}
-		defer p.stop()
-		page = p
+	if err = in.validate(); err != nil {
+		return nil, statusResult{}, err
+	}
+	if err = t.checkPipelines(ctx, in.SourceRepo, in.TargetRepo); err != nil {
+		return nil, statusResult{}, err
+	}
+	scope, existing, err := t.variableToSet(ctx, in.place(), in.VariableName, in.Force)
+	if err != nil {
+		return nil, statusResult{}, err
 	}
 
-	if err := in.validate(); err != nil {
-		return nil, linkResult{}, err
+	if page == nil {
+		var res *mcp.CallToolResult
+		res, err = t.askSecrets(req, in, secretPageInfo{
+			Title:   "Link repositories by access token",
+			Need:    fmt.Sprintf("Create a repository access token in %s and paste it here.", in.SourceRepo),
+			Outcome: fmt.Sprintf("The token becomes the secured variable %s in %s, so its pipelines can reach %s.", in.VariableName, in.place(), in.SourceRepo),
+			Token: &tokenHelp{
+				Repo:        in.SourceRepo,
+				CreateURL:   t.bb.AccessTokensPage(in.SourceRepo),
+				Name:        in.TargetRepo + "-pipelines",
+				Permissions: in.Permissions,
+			},
+			Fields: []secretField{{Name: tokenField, Label: "Access token of " + in.SourceRepo}},
+		})
+		return res, statusResult{}, err
 	}
-	if err := t.checkPipelines(ctx, in.SourceRepo, in.TargetRepo); err != nil {
-		return nil, linkResult{}, err
+	if !accepted(req) {
+		return nil, statusResult{Status: "cancelled", Message: "the user did not open the token page; nothing changed"}, nil
 	}
-	scope, err := t.variableScope(ctx, in)
+	values, err := t.waitSecrets(ctx, req, page)
 	if err != nil {
-		return nil, linkResult{}, err
+		return nil, statusResult{}, err
 	}
-	vars, err := t.bb.ListVariables(ctx, scope)
-	if err != nil {
-		return nil, linkResult{}, err
-	}
-	var existing *bitbucket.Variable
-	for i, v := range vars {
-		if v.Key == in.VariableName {
-			existing = &vars[i]
-		}
-	}
-	if existing != nil && !in.Force {
-		return nil, linkResult{}, fmt.Errorf("variable %s already exists in %s; nothing changed. Pass force=true to overwrite it",
-			in.VariableName, in.place())
-	}
-
-	if !cameBack {
-		return t.askToken(req, in)
-	}
-	if !accepted(resp) {
-		return nil, linkResult{Status: "cancelled", Message: "the user did not open the token page; nothing changed"}, nil
-	}
-	token, err := t.waitToken(ctx, req, page)
-	if err != nil {
-		return nil, linkResult{}, err
-	}
+	token := values[tokenField]
 	if err = t.bb.CheckAccessToken(ctx, in.SourceRepo, token, in.Permissions); err != nil {
 		if bitbucket.IsStatus(err, http.StatusUnauthorized) {
-			return nil, linkResult{}, errors.New("bitbucket rejected the provided token as invalid; nothing changed")
+			return nil, statusResult{}, errors.New("bitbucket rejected the provided token as invalid; nothing changed")
 		}
 		if bitbucket.IsStatus(err, http.StatusForbidden) || bitbucket.IsStatus(err, http.StatusNotFound) {
-			return nil, linkResult{}, fmt.Errorf("the provided token cannot access %s with the requested permissions, so it was likely created in another repository or with other permissions; nothing changed", in.SourceRepo)
+			return nil, statusResult{}, fmt.Errorf("the provided token cannot access %s with the requested permissions, so it was likely created in another repository or with other permissions; nothing changed", in.SourceRepo)
 		}
-		return nil, linkResult{}, fmt.Errorf("checking the provided token against %s: %w; nothing changed", in.SourceRepo, err)
+		return nil, statusResult{}, fmt.Errorf("checking the provided token against %s: %w; nothing changed", in.SourceRepo, err)
 	}
 
-	v := bitbucket.Variable{Key: in.VariableName, Value: token, Secured: true}
-	status := "created"
-	if existing != nil {
-		v.UUID = existing.UUID
-		status = "updated"
-		err = t.bb.UpdateVariable(ctx, scope, v)
-	} else {
-		err = t.bb.CreateVariable(ctx, scope, v)
-	}
+	status, err := t.putVariable(ctx, scope, existing, bitbucket.Variable{Key: in.VariableName, Value: token, Secured: true})
 	if err != nil {
-		return nil, linkResult{}, err
+		return nil, statusResult{}, err
 	}
 	t.log.InfoContext(ctx, "linked repositories by token", "source", in.SourceRepo, "target", in.TargetRepo,
 		"variable", in.VariableName, "scope", in.Scope, "environment", in.Environment, "status", status)
-	return nil, linkResult{
+	return nil, statusResult{
 		Status:  status,
 		Message: fmt.Sprintf("secured variable %s %s in %s with an access token of %s", in.VariableName, status, in.place(), in.SourceRepo),
 	}, nil
-}
-
-func (t *tools) variableScope(ctx context.Context, in linkByTokenInput) (bitbucket.VariableScope, error) {
-	scope := bitbucket.VariableScope{Repo: in.TargetRepo}
-	if in.Scope != scopeDeployment {
-		return scope, nil
-	}
-	envs, err := t.bb.ListEnvironments(ctx, in.TargetRepo)
-	if err != nil {
-		return scope, err
-	}
-	names := make([]string, 0, len(envs))
-	for _, e := range envs {
-		if e.Name == in.Environment {
-			scope.EnvironmentUUID = e.UUID
-			return scope, nil
-		}
-		names = append(names, e.Name)
-	}
-	return scope, fmt.Errorf("deployment environment %q not found in %s; available: %s",
-		in.Environment, in.TargetRepo, strings.Join(names, ", "))
 }

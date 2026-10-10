@@ -23,14 +23,14 @@ func (t handlerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return rec.Result(), nil
 }
 
-func newTestClient(_ *testing.T, h http.HandlerFunc) *Client {
+func newTestClient(h http.HandlerFunc) *Client {
 	return New(&http.Client{Transport: handlerTransport{h}}, Config{
 		Workspace: "ws", Email: testEmail, Token: testToken,
 	})
 }
 
 func TestCredentialsOnlyInAuthorizationHeader(t *testing.T) {
-	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+	c := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
 		if !ok || user != testEmail || pass != testToken {
 			t.Errorf("basic auth = %q, %q, %v", user, pass, ok)
@@ -50,7 +50,7 @@ func TestCredentialsOnlyInAuthorizationHeader(t *testing.T) {
 }
 
 func TestAPIErrorKeepsOnlyMessage(t *testing.T) {
-	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	c := newTestClient(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = fmt.Fprint(w, `{"type": "error", "error": {"message": "key is invalid", "detail": "internal detail"}}`)
 	})
@@ -64,7 +64,7 @@ func TestAPIErrorKeepsOnlyMessage(t *testing.T) {
 }
 
 func TestListFollowsNext(t *testing.T) {
-	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+	c := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("page") == "2" {
 			_, _ = fmt.Fprint(w, `{"values": [{"id": 2, "label": "b"}]}`)
 			return
@@ -81,7 +81,7 @@ func TestListFollowsNext(t *testing.T) {
 }
 
 func TestListRefusesForeignNext(t *testing.T) {
-	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	c := newTestClient(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, `{"values": [], "next": "https://evil.example/2.0/steal"}`)
 	})
 	if _, err := c.ListDeployKeys(context.Background(), "repo-b"); err == nil {
@@ -92,7 +92,7 @@ func TestListRefusesForeignNext(t *testing.T) {
 // A followed 307 would resend the body, which may hold a token, to the redirect target.
 func TestRedirectsAreNotFollowed(t *testing.T) {
 	var requests int
-	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	c := newTestClient(func(w http.ResponseWriter, _ *http.Request) {
 		requests++
 		w.Header().Set("Location", "https://evil.example/collect")
 		w.WriteHeader(http.StatusTemporaryRedirect)
@@ -107,7 +107,7 @@ func TestRedirectsAreNotFollowed(t *testing.T) {
 }
 
 func TestPipelineSSHPublicKeyMissing(t *testing.T) {
-	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	c := newTestClient(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	})
 	_, err := c.PipelineSSHPublicKey(context.Background(), "repo-a")
@@ -128,7 +128,7 @@ func TestCheckAccessToken(t *testing.T) {
 	} {
 		for _, status := range []int{http.StatusOK, http.StatusForbidden, http.StatusUnauthorized} {
 			t.Run(fmt.Sprintf("%v %d", tc.permissions, status), func(t *testing.T) {
-				c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				c := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 					if got := r.Header.Get("Authorization"); got != "Bearer repo-token" {
 						t.Errorf("Authorization = %q", got)
 					}
@@ -148,7 +148,7 @@ func TestCheckAccessToken(t *testing.T) {
 
 func TestVariablePaths(t *testing.T) {
 	var got []string
-	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+	c := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		got = append(got, r.Method+" "+r.URL.EscapedPath())
 	})
 	ctx := context.Background()
@@ -159,6 +159,9 @@ func TestVariablePaths(t *testing.T) {
 		c.UpdateVariable(ctx, repo, Variable{UUID: "{var-1}", Key: "K"}),
 		c.CreateVariable(ctx, env, Variable{Key: "K"}),
 		c.UpdateVariable(ctx, env, Variable{UUID: "{var-2}", Key: "K"}),
+		c.CreateVariable(ctx, VariableScope{}, Variable{Key: "K"}),
+		c.DeleteVariable(ctx, VariableScope{}, "{var-3}"),
+		c.DeleteVariable(ctx, env, "{var-2}"),
 	} {
 		if err != nil {
 			t.Fatal(err)
@@ -169,9 +172,25 @@ func TestVariablePaths(t *testing.T) {
 		"PUT /2.0/repositories/ws/repo-b/pipelines_config/variables/%7Bvar-1%7D",
 		"POST /2.0/repositories/ws/repo-b/deployments_config/environments/%7Benv-1%7D/variables",
 		"PUT /2.0/repositories/ws/repo-b/deployments_config/environments/%7Benv-1%7D/variables/%7Bvar-2%7D",
+		"POST /2.0/workspaces/ws/pipelines-config/variables",
+		"DELETE /2.0/workspaces/ws/pipelines-config/variables/%7Bvar-3%7D",
+		"DELETE /2.0/repositories/ws/repo-b/deployments_config/environments/%7Benv-1%7D/variables/%7Bvar-2%7D",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("requests:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestWebURLs(t *testing.T) {
+	c := newTestClient(nil)
+	for got, want := range map[string]string{
+		c.PipelineURL("repo-a", 42):      "https://bitbucket.org/ws/repo-a/pipelines/results/42",
+		c.StepURL("repo-a", 42, "{s-1}"): "https://bitbucket.org/ws/repo-a/pipelines/results/42/steps/%7Bs-1%7D",
+		c.AccessTokensPage("repo-a"):     "https://bitbucket.org/ws/repo-a/admin/access-tokens",
+	} {
+		if got != want {
+			t.Errorf("URL = %s, want %s", got, want)
+		}
 	}
 }
 

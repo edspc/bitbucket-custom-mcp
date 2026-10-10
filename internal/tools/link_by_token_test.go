@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -13,12 +14,13 @@ import (
 	"github.com/edspc/bitbucket-custom-mcp/internal/bitbucket"
 )
 
-// fakeUser answers URL elicitation like a person: agrees to open the page and pastes token
-// there, unless token is empty.
+// fakeUser answers URL elicitation like a person: agrees to open the page and submits token
+// there, or values for a page with other fields, unless both are empty.
 type fakeUser struct {
 	pages  *stubPages
 	action string
 	token  string
+	values url.Values
 
 	mu       sync.Mutex
 	requests []*mcp.ElicitParams
@@ -29,8 +31,12 @@ func (u *fakeUser) elicit(_ context.Context, req *mcp.ElicitRequest) (*mcp.Elici
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.requests = append(u.requests, req.Params)
-	if u.action == "accept" && u.token != "" {
-		u.status = u.pages.submit(req.Params.URL, u.token)
+	values := u.values
+	if u.token != "" {
+		values = url.Values{tokenField: {u.token}}
+	}
+	if u.action == "accept" && values != nil {
+		u.status = u.pages.submit(req.Params.URL, values)
 	}
 	return &mcp.ElicitResult{Action: u.action}, nil
 }
@@ -38,7 +44,16 @@ func (u *fakeUser) elicit(_ context.Context, req *mcp.ElicitRequest) (*mcp.Elici
 func (u *fakeUser) asked() []*mcp.ElicitParams {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	return append([]*mcp.ElicitParams(nil), u.requests...)
+	return slices.Clone(u.requests)
+}
+
+// connectRetryingItself connects a client that leaves input requests to the test, which
+// answers them by calling the tool again itself.
+func connectRetryingItself(t *testing.T, f *fakeBitbucket) *mcp.ClientSession {
+	t.Helper()
+	opts := clientOptions((&fakeUser{action: "accept"}).elicit)
+	opts.MultiRoundTrip = &mcp.MultiRoundTripOptions{Disabled: true}
+	return connectWith(t, f, opts, "")
 }
 
 func tokenArgs(scope, env string, force bool) map[string]any {
@@ -55,9 +70,7 @@ func tokenArgs(scope, env string, force bool) map[string]any {
 // The page request reaches the user both as an input request of the current protocol and as
 // a direct elicitation request on the earlier version that has URL elicitation.
 func TestLinkByTokenRepositoryScope(t *testing.T) {
-	for _, version := range []string{"", "2025-11-25"} {
-		t.Run("protocol "+version, func(t *testing.T) { testRepositoryScope(t, version) })
-	}
+	forEachProtocol(t, testRepositoryScope)
 }
 
 func testRepositoryScope(t *testing.T, version string) {
@@ -97,7 +110,10 @@ func TestLinkByTokenPageShowsInstructions(t *testing.T) {
 	}
 	r := httptestGet(asked[0].URL)
 	body := f.pages.do(r).Body.String()
-	for _, want := range []string{"https://bitbucket.org/ws/repo-a/admin/access-tokens", "repository, pipeline", "repo-b-pipelines", "REPO_A_TOKEN"} {
+	for _, want := range []string{
+		`href="https://bitbucket.org/ws/repo-a/admin/access-tokens"`, `<span class="chip">repository</span><span class="chip">pipeline</span>`,
+		"repo-b-pipelines", "REPO_A_TOKEN", "link_repos_by_token", "Create a repository access token in repo-a",
+	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page does not mention %q", want)
 		}
@@ -176,10 +192,11 @@ func TestLinkByTokenUserBacksOut(t *testing.T) {
 
 func TestLinkByTokenNoTokenSubmitted(t *testing.T) {
 	f := newFake()
-	f.tokenWait = 50 * time.Millisecond
 	u := &fakeUser{pages: f.pages, action: "accept"}
-	out, isErr := call(t, connect(t, f, u.elicit), "link_repos_by_token", tokenArgs("repository", "", false))
-	if !isErr || !strings.Contains(out, "no token was submitted") {
+	cs := connect(t, f, u.elicit)
+	f.tools.secretWait = 50 * time.Millisecond
+	out, isErr := call(t, cs, "link_repos_by_token", tokenArgs("repository", "", false))
+	if !isErr || !strings.Contains(out, "nothing was submitted") {
 		t.Fatalf("result = %s (error %v)", out, isErr)
 	}
 	if len(f.mutationList()) != 0 || f.pages.stopCount() != 1 {
@@ -211,16 +228,14 @@ func TestLinkByTokenNeedsURLElicitation(t *testing.T) {
 // A client that answers the input request itself must come back with the same arguments.
 func TestLinkByTokenRetryMustMatchRequest(t *testing.T) {
 	f := newFake()
-	opts := clientOptions((&fakeUser{action: "accept"}).elicit)
-	opts.MultiRoundTrip = &mcp.MultiRoundTripOptions{Disabled: true}
-	cs := connectWith(t, f, opts, "")
+	cs := connectRetryingItself(t, f)
 	ctx := context.Background()
 
 	first, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "link_repos_by_token", Arguments: tokenArgs("repository", "", false)})
-	if err != nil || first.RequestState == "" || first.InputRequests[tokenInputID] == nil {
+	if err != nil || first.RequestState == "" || first.InputRequests[secretsInputID] == nil {
 		t.Fatalf("first call = %+v, %v", first, err)
 	}
-	accept := mcp.InputResponseMap{tokenInputID: &mcp.ElicitResult{Action: "accept"}}
+	accept := mcp.InputResponseMap{secretsInputID: &mcp.ElicitResult{Action: "accept"}}
 
 	other := tokenArgs("repository", "", false)
 	other["variable_name"] = "OTHER"
@@ -269,10 +284,8 @@ func TestLinkByTokenWithoutRepositoryPermission(t *testing.T) {
 // Pages that calls are already waiting on still count, and they close at their deadline.
 func TestLinkByTokenLimitCountsWaitingPages(t *testing.T) {
 	f := newFake()
-	f.tokenWait = time.Second
-	opts := clientOptions((&fakeUser{action: "accept"}).elicit)
-	opts.MultiRoundTrip = &mcp.MultiRoundTripOptions{Disabled: true}
-	cs := connectWith(t, f, opts, "")
+	cs := connectRetryingItself(t, f)
+	f.tools.secretWait = time.Second
 	ctx := context.Background()
 	callTool := func(p *mcp.CallToolParams) *mcp.CallToolResult {
 		res, err := cs.CallTool(ctx, p)
@@ -292,41 +305,29 @@ func TestLinkByTokenLimitCountsWaitingPages(t *testing.T) {
 		state := callTool(fresh()).RequestState
 		wg.Go(func() {
 			retry := fresh()
-			retry.InputResponses = mcp.InputResponseMap{tokenInputID: &mcp.ElicitResult{Action: "accept"}}
+			retry.InputResponses = mcp.InputResponseMap{secretsInputID: &mcp.ElicitResult{Action: "accept"}}
 			retry.RequestState = state
 			callTool(retry)
 		})
 	}
-	for start := time.Now(); ; time.Sleep(10 * time.Millisecond) {
+	// The retries pick up their pages.
+	eventually(t, func() bool {
 		f.tools.mu.Lock()
-		taken := len(f.tools.pending) == 0
-		f.tools.mu.Unlock()
-		if taken {
-			break
-		}
-		if time.Since(start) > 5*time.Second {
-			t.Fatal("retries did not pick up their pages")
-		}
-	}
+		defer f.tools.mu.Unlock()
+		return len(f.tools.pending) == 0
+	})
 	if res := callTool(fresh()); !res.IsError || !strings.Contains(res.Content[0].(*mcp.TextContent).Text, "already open") {
 		t.Fatalf("a call beyond the limit must be refused, got %+v", res)
 	}
 	wg.Wait()
-	f.tools.mu.Lock()
-	open := f.tools.openPages
-	f.tools.mu.Unlock()
-	if open != 0 || f.pages.stopCount() != maxPendingPages {
-		t.Fatalf("open pages = %d, stopped = %d after the deadline", open, f.pages.stopCount())
-	}
+	expectPagesClosed(t, f, maxPendingPages)
 }
 
 // A call that comes back and then fails its checks must close its page, or the page would
 // take a token nobody reads and hold a slot until its deadline.
 func TestLinkByTokenFailedRetryClosesPage(t *testing.T) {
 	f := newFake()
-	opts := clientOptions((&fakeUser{action: "accept"}).elicit)
-	opts.MultiRoundTrip = &mcp.MultiRoundTripOptions{Disabled: true}
-	cs := connectWith(t, f, opts, "")
+	cs := connectRetryingItself(t, f)
 	ctx := context.Background()
 	first, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "link_repos_by_token", Arguments: tokenArgs("repository", "", false)})
 	if err != nil {
@@ -339,7 +340,7 @@ func TestLinkByTokenFailedRetryClosesPage(t *testing.T) {
 
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{
 		Name: "link_repos_by_token", Arguments: tokenArgs("repository", "", false),
-		InputResponses: mcp.InputResponseMap{tokenInputID: &mcp.ElicitResult{Action: "accept"}}, RequestState: first.RequestState,
+		InputResponses: mcp.InputResponseMap{secretsInputID: &mcp.ElicitResult{Action: "accept"}}, RequestState: first.RequestState,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -347,19 +348,12 @@ func TestLinkByTokenFailedRetryClosesPage(t *testing.T) {
 	if text := res.Content[0].(*mcp.TextContent).Text; !res.IsError || !strings.Contains(text, "already exists") {
 		t.Fatalf("retry = %s", text)
 	}
-	f.tools.mu.Lock()
-	open := f.tools.openPages
-	f.tools.mu.Unlock()
-	if open != 0 || f.pages.stopCount() != 1 {
-		t.Fatalf("open pages = %d, stopped = %d; the page must be closed", open, f.pages.stopCount())
-	}
+	expectPagesClosed(t, f, 1)
 }
 
 func TestLinkByTokenLimitsOpenPages(t *testing.T) {
 	f := newFake()
-	opts := clientOptions((&fakeUser{action: "accept"}).elicit)
-	opts.MultiRoundTrip = &mcp.MultiRoundTripOptions{Disabled: true}
-	cs := connectWith(t, f, opts, "")
+	cs := connectRetryingItself(t, f)
 	for i := range maxPendingPages + 1 {
 		res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "link_repos_by_token", Arguments: tokenArgs("repository", "", false)})
 		if err != nil {

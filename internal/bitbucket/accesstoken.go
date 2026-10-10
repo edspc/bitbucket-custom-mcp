@@ -3,14 +3,13 @@ package bitbucket
 import (
 	"context"
 	"net/http"
-	"net/url"
 	"slices"
 	"strings"
 )
 
 // AccessTokensPage is where a repository access token is created; Bitbucket has no API for it.
 func (c *Client) AccessTokensPage(repo string) string {
-	return WebURL + "/" + url.PathEscape(c.cfg.Workspace) + "/" + url.PathEscape(repo) + "/admin/access-tokens"
+	return c.repoWebURL(repo, "admin", "access-tokens")
 }
 
 // CheckAccessToken makes sure token is a working access token of repo: it must read something

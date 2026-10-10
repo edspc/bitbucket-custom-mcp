@@ -1,7 +1,7 @@
 BINARY := bitbucket-custom-mcp
 BINDIR ?= $(HOME)/.local/bin
 
-.PHONY: build install lint test clean
+.PHONY: build install lint test snyk clean
 
 build:
 	go build -o bin/$(BINARY) ./cmd/server
@@ -15,6 +15,10 @@ lint:
 
 test:
 	go test -race ./...
+
+snyk:
+	snyk test
+	snyk code test
 
 clean:
 	rm -rf bin

@@ -1,0 +1,222 @@
+package tools
+
+import (
+	"net/url"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/edspc/bitbucket-custom-mcp/internal/bitbucket"
+)
+
+func (f *fakeBitbucket) runBodyList() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.runBodies)
+}
+
+func TestRunPipelineOnBranch(t *testing.T) {
+	f := newFake()
+	out, isErr := call(t, connect(t, f, nil), "run_pipeline", map[string]any{"repo": "repo-a", "branch": "main"})
+	if isErr {
+		t.Fatalf("result = %s", out)
+	}
+	res := decodeResult[runPipelineResult](t, out)
+	p := res.Pipeline
+	if res.Status != "started" || p == nil || p.BuildNumber != 1 || p.State != "PENDING" || p.Ref != "branch main" ||
+		p.URL != "https://bitbucket.org/ws/repo-a/pipelines/results/1" || p.ResourceURI != "bitbucket://pipelines/repo-a/1" {
+		t.Fatalf("result = %+v %+v", res, p)
+	}
+	want := `{"target":{"type":"pipeline_ref_target","ref_type":"branch","ref_name":"main"}}`
+	if got := f.runBodyList(); len(got) != 1 || got[0] != want {
+		t.Fatalf("run requests = %v", got)
+	}
+}
+
+func TestRunCustomPipelineOnTagWithVariables(t *testing.T) {
+	f := newFake()
+	out, isErr := call(t, connect(t, f, nil), "run_pipeline", map[string]any{
+		"repo": "repo-a", "tag": "v1.2.0", "commit": "abc123", "custom": "deploy",
+		"variables": []map[string]string{{"name": "ENV", "value": "prod"}},
+	})
+	if isErr || !strings.Contains(out, `"definition":"custom: deploy"`) {
+		t.Fatalf("result = %s (error %v)", out, isErr)
+	}
+	want := `{"target":{"type":"pipeline_ref_target","ref_type":"tag","ref_name":"v1.2.0","commit":{"type":"commit","hash":"abc123"},` +
+		`"selector":{"type":"custom","pattern":"deploy"}},"variables":[{"key":"ENV","value":"prod","secured":false}]}`
+	if got := f.runBodyList(); len(got) != 1 || got[0] != want {
+		t.Fatalf("run requests = %v\nwant %s", got, want)
+	}
+}
+
+func TestRunCustomPipelineWithSecretVariables(t *testing.T) {
+	f := newFake()
+	u := &fakeUser{pages: f.pages, action: "accept", values: url.Values{"DEPLOY_TOKEN": {"t0k3n"}, "DB_PASS": {"p4ss"}}}
+	cs := connect(t, f, u.elicit)
+	out, isErr := call(t, cs, "run_pipeline", map[string]any{
+		"repo": "repo-a", "branch": "main", "custom": "deploy",
+		"variables":        []map[string]string{{"name": "ENV", "value": "prod"}},
+		"secret_variables": []string{"DEPLOY_TOKEN", "DB_PASS"},
+	})
+	if isErr || !strings.Contains(out, `"started"`) || strings.Contains(out, "t0k3n") || strings.Contains(out, "p4ss") {
+		t.Fatalf("result = %s (error %v)", out, isErr)
+	}
+	want := `"variables":[{"key":"ENV","value":"prod","secured":false},{"key":"DEPLOY_TOKEN","value":"t0k3n","secured":true},{"key":"DB_PASS","value":"p4ss","secured":true}]`
+	if got := f.runBodyList(); len(got) != 1 || !strings.Contains(got[0], want) {
+		t.Fatalf("run requests = %v", got)
+	}
+	asked := u.asked()
+	if len(asked) != 1 {
+		t.Fatalf("elicitation requests = %+v", asked)
+	}
+	body := f.pages.do(httptestGet(asked[0].URL)).Body.String()
+	for _, wantText := range []string{"run_pipeline", `name="DEPLOY_TOKEN"`, `name="DB_PASS"`, "the custom pipeline &#34;deploy&#34; of repo-a on branch main"} {
+		if !strings.Contains(body, wantText) {
+			t.Errorf("page does not contain %q", wantText)
+		}
+	}
+	if strings.Contains(body, `name="ENV"`) {
+		t.Error("plain variables must not be asked for on the page")
+	}
+	expectPagesClosed(t, f, 1)
+}
+
+func TestRunPipelineSecretsDeclined(t *testing.T) {
+	f := newFake()
+	u := &fakeUser{pages: f.pages, action: "cancel"}
+	out, isErr := call(t, connect(t, f, u.elicit), "run_pipeline",
+		map[string]any{"repo": "repo-a", "branch": "main", "custom": "deploy", "secret_variables": []string{"TOKEN"}})
+	if isErr || !strings.Contains(out, `"cancelled"`) {
+		t.Fatalf("result = %s (error %v)", out, isErr)
+	}
+	if got := f.runBodyList(); len(got) != 0 {
+		t.Fatalf("run requests = %v", got)
+	}
+	expectPagesClosed(t, f, 1)
+}
+
+func TestRunPipelineValidatesInput(t *testing.T) {
+	for name, tc := range map[string]struct {
+		args map[string]any
+		want string
+	}{
+		"no ref":                {map[string]any{"repo": "repo-a"}, "exactly one of branch and tag"},
+		"branch and tag":        {map[string]any{"repo": "repo-a", "branch": "main", "tag": "v1"}, "exactly one of branch and tag"},
+		"variables, no custom":  {map[string]any{"repo": "repo-a", "branch": "main", "variables": []map[string]string{{"name": "A", "value": "1"}}}, "custom pipelines only"},
+		"secrets, no custom":    {map[string]any{"repo": "repo-a", "branch": "main", "secret_variables": []string{"A"}}, "custom pipelines only"},
+		"duplicate variable":    {map[string]any{"repo": "repo-a", "branch": "main", "custom": "c", "variables": []map[string]string{{"name": "A", "value": "1"}}, "secret_variables": []string{"A"}}, "more than once"},
+		"bad variable name":     {map[string]any{"repo": "repo-a", "branch": "main", "custom": "c", "secret_variables": []string{"A-B"}}, "only letters, digits and underscores"},
+		"pipelines not enabled": {map[string]any{"repo": "repo-c", "branch": "main"}, "not enabled in repo-c"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake()
+			u := &fakeUser{pages: f.pages, action: "accept"}
+			out, isErr := call(t, connect(t, f, u.elicit), "run_pipeline", tc.args)
+			if !isErr || !strings.Contains(out, tc.want) {
+				t.Fatalf("result = %s (error %v), want %q", out, isErr, tc.want)
+			}
+			if len(f.runBodyList()) != 0 || len(u.asked()) != 0 {
+				t.Fatal("nothing may be started or asked for")
+			}
+		})
+	}
+}
+
+func TestListPipelinesNewestFirst(t *testing.T) {
+	f := newFake()
+	f.addRun("repo-a", completed("SUCCESSFUL"))
+	f.addRun("repo-a", running())
+	f.mu.Lock()
+	f.addRunLocked("repo-a", completed("FAILED"), bitbucket.PipelineTarget{Type: "pipeline_ref_target", RefType: "branch", RefName: "dev"}, nil)
+	f.mu.Unlock()
+	cs := connect(t, f, nil)
+
+	res := decodeResult[listPipelinesResult](t, mustCall(t, cs, "list_pipelines", map[string]any{"repo": "repo-a", "limit": 2}))
+	if len(res.Pipelines) != 2 || res.Pipelines[0].BuildNumber != 3 || res.Pipelines[1].BuildNumber != 2 || res.Pipelines[0].State != "COMPLETED/FAILED" {
+		t.Fatalf("pipelines = %+v", res.Pipelines)
+	}
+	res = decodeResult[listPipelinesResult](t, mustCall(t, cs, "list_pipelines", map[string]any{"repo": "repo-a", "branch": "main"}))
+	if len(res.Pipelines) != 2 || res.Pipelines[0].BuildNumber != 2 {
+		t.Fatalf("pipelines on main = %+v", res.Pipelines)
+	}
+	f.mu.Lock()
+	queries := f.listQueries
+	f.mu.Unlock()
+	if len(queries) != 2 || queries[0] != "pagelen=2&sort=-created_on" || queries[1] != "pagelen=10&sort=-created_on&target.branch=main" {
+		t.Fatalf("queries = %v", queries)
+	}
+	for _, limit := range []int{51, -1} {
+		if out, isErr := call(t, cs, "list_pipelines", map[string]any{"repo": "repo-a", "limit": limit}); !isErr || !strings.Contains(out, "between 1 and 50") {
+			t.Fatalf("limit %d = %s (error %v)", limit, out, isErr)
+		}
+	}
+}
+
+func TestGetPipelineWithSteps(t *testing.T) {
+	f := newFake()
+	failed := completed("ERROR")
+	failed.Result.Error = &struct {
+		Message string `json:"message"`
+	}{Message: "Container 'docker' exceeded memory limit."}
+	p := f.addRun("repo-a", failed,
+		bitbucket.Step{UUID: "{s1}", Name: "Build", State: completed("SUCCESSFUL"), StartedOn: "t1", CompletedOn: "t2"},
+		bitbucket.Step{UUID: "{s2}", Name: "Test", State: failed, StartedOn: "t2", CompletedOn: "t3"},
+	)
+	p.Creator.DisplayName = "Dev One"
+	p.CompletedOn = "2026-10-10T10:05:00Z"
+	p.Target.Commit = &bitbucket.Commit{Type: "commit", Hash: "abc123"}
+	cs := connect(t, f, nil)
+	for _, id := range []string{"1", p.UUID} {
+		v := decodeResult[pipelineView](t, mustCall(t, cs, "get_pipeline", map[string]any{"repo": "repo-a", "pipeline": id}))
+		if v.BuildNumber != 1 || !v.Finished || v.State != "COMPLETED/ERROR" || v.Error != "Container 'docker' exceeded memory limit." || len(v.Steps) != 2 ||
+			v.Steps[1].State != "COMPLETED/ERROR" || v.Steps[1].Error != "Container 'docker' exceeded memory limit." {
+			t.Fatalf("pipeline %s = %+v", id, v)
+		}
+		if v.Creator != "Dev One" || v.CreatedOn != "2026-10-10T10:00:00Z" || v.CompletedOn != "2026-10-10T10:05:00Z" ||
+			v.Commit != "abc123" || v.Ref != "branch main" || v.Steps[0].StartedOn != "t1" || v.Steps[0].CompletedOn != "t2" {
+			t.Fatalf("pipeline %s details = %+v", id, v)
+		}
+	}
+	if out, isErr := call(t, cs, "get_pipeline", map[string]any{"repo": "repo-a", "pipeline": "99"}); !isErr || !strings.Contains(out, "404") {
+		t.Fatalf("unknown pipeline = %s (error %v)", out, isErr)
+	}
+}
+
+func TestToolsRefuseMissingFields(t *testing.T) {
+	cron := "0 0 2 * * ? *"
+	for name, tc := range map[string]struct {
+		tool string
+		args map[string]any
+		want string
+	}{
+		"get_pipeline, no pipeline":          {"get_pipeline", map[string]any{"repo": "repo-a", "pipeline": ""}, "repo and pipeline are required"},
+		"watch_pipeline, no repo":            {"watch_pipeline", map[string]any{"repo": "", "pipeline": "1"}, "repo and pipeline are required"},
+		"get_pipeline_log, no pipeline":      {"get_pipeline_log", map[string]any{"repo": "repo-a", "pipeline": ""}, "repo and pipeline are required"},
+		"list_pipelines, no repo":            {"list_pipelines", map[string]any{"repo": ""}, "repo is required"},
+		"run_pipeline, no repo":              {"run_pipeline", map[string]any{"repo": "", "branch": "main"}, "repo is required"},
+		"list_schedules, no repo":            {"list_schedules", map[string]any{"repo": ""}, "repo is required"},
+		"add_schedule, no repo":              {"add_schedule", map[string]any{"repo": "", "branch": "main", "pipeline": "default", "cron": cron}, "repo and branch are required"},
+		"delete_schedule, no repo":           {"delete_schedule", map[string]any{"repo": "", "schedule": "{sch-1}"}, "repo and schedule are required"},
+		"delete_schedule, no schedule":       {"delete_schedule", map[string]any{"repo": "repo-a", "schedule": ""}, "repo and schedule are required"},
+		"list_variables, unknown scope":      {"list_variables", map[string]any{"scope": "project"}, "scope must be"},
+		"delete_variable, no name":           {"delete_variable", map[string]any{"scope": "workspace", "name": ""}, "name is required"},
+		"delete_variable, workspace+repo":    {"delete_variable", map[string]any{"scope": "workspace", "repo": "repo-b", "name": "TOKEN"}, "not used with scope 'workspace'"},
+		"delete_variable, repository+env":    {"delete_variable", map[string]any{"scope": "repository", "repo": "repo-b", "environment": "Production", "name": "TOKEN"}, "only used with scope 'deployment'"},
+		"delete_variable, deployment no env": {"delete_variable", map[string]any{"scope": "deployment", "repo": "repo-b", "name": "TOKEN"}, "environment is required"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake()
+			f.addRun("repo-a", running())
+			f.vars["workspace"] = []bitbucket.Variable{{UUID: "{v1}", Key: "TOKEN"}}
+			f.vars["repo-b"] = []bitbucket.Variable{{UUID: "{v2}", Key: "TOKEN"}}
+			f.schedules["repo-a"] = []bitbucket.Schedule{{UUID: "{sch-1}"}}
+			out, isErr := call(t, connect(t, f, nil), tc.tool, tc.args)
+			if !isErr || !strings.Contains(out, tc.want) {
+				t.Fatalf("result = %s (error %v), want %q", out, isErr, tc.want)
+			}
+			if m := f.mutationList(); len(m) != 0 {
+				t.Fatalf("mutations = %v", m)
+			}
+		})
+	}
+}

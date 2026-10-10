@@ -18,15 +18,18 @@ type Environment struct {
 	Name string `json:"name"`
 }
 
-// VariableScope selects where a variable lives: the whole repository, or one deployment
-// environment when EnvironmentUUID is set.
+// VariableScope selects where a variable lives: the whole workspace when Repo is empty, the
+// whole repository, or one deployment environment of it when EnvironmentUUID is set.
 type VariableScope struct {
 	Repo            string
 	EnvironmentUUID string
 }
 
 func (c *Client) variablesPath(s VariableScope, parts ...string) string {
-	if s.EnvironmentUUID == "" {
+	switch {
+	case s.Repo == "":
+		return escapedPath(append([]string{"workspaces", c.cfg.Workspace, "pipelines-config", "variables"}, parts...)...)
+	case s.EnvironmentUUID == "":
 		return c.repoPath(s.Repo, append([]string{"pipelines_config", "variables"}, parts...)...)
 	}
 	return c.repoPath(s.Repo, append([]string{"deployments_config", "environments", s.EnvironmentUUID, "variables"}, parts...)...)
@@ -42,6 +45,10 @@ func (c *Client) CreateVariable(ctx context.Context, s VariableScope, v Variable
 
 func (c *Client) UpdateVariable(ctx context.Context, s VariableScope, v Variable) error {
 	return c.call(ctx, http.MethodPut, c.variablesPath(s, v.UUID), v, nil)
+}
+
+func (c *Client) DeleteVariable(ctx context.Context, s VariableScope, uuid string) error {
+	return c.call(ctx, http.MethodDelete, c.variablesPath(s, uuid), nil, nil)
 }
 
 func (c *Client) ListEnvironments(ctx context.Context, repo string) ([]Environment, error) {

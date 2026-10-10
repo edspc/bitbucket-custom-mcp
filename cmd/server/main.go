@@ -29,23 +29,24 @@ func run(ctx context.Context, log *slog.Logger) error {
 		return err
 	}
 	bb := bitbucket.New(&http.Client{Timeout: 30 * time.Second}, cfg)
-	s := mcp.NewServer(&mcp.Implementation{Name: "bitbucket-custom-mcp", Version: "0.1.0"}, nil)
-	tools.Register(s, bb, log)
+	s := tools.NewServer(ctx, &mcp.Implementation{Name: "bitbucket-custom-mcp", Version: "0.2.0"}, bb, log)
 	log.Info("serving MCP over stdio", "workspace", cfg.Workspace)
 	return s.Run(ctx, &mcp.StdioTransport{})
 }
 
 func configFromEnv() (bitbucket.Config, error) {
-	cfg := bitbucket.Config{
-		Workspace: os.Getenv("BITBUCKET_WORKSPACE"),
-		Email:     os.Getenv("BITBUCKET_EMAIL"),
-		Token:     os.Getenv("BITBUCKET_API_TOKEN"),
-	}
 	var missing []string
-	for _, name := range []string{"BITBUCKET_WORKSPACE", "BITBUCKET_EMAIL", "BITBUCKET_API_TOKEN"} {
-		if os.Getenv(name) == "" {
+	get := func(name string) string {
+		v := os.Getenv(name)
+		if v == "" {
 			missing = append(missing, name)
 		}
+		return v
+	}
+	cfg := bitbucket.Config{
+		Workspace: get("BITBUCKET_WORKSPACE"),
+		Email:     get("BITBUCKET_EMAIL"),
+		Token:     get("BITBUCKET_API_TOKEN"),
 	}
 	if len(missing) > 0 {
 		return cfg, fmt.Errorf("missing environment variables: %s", strings.Join(missing, ", "))
