@@ -1,7 +1,7 @@
 BINARY := bitbucket-custom-mcp
 BINDIR ?= $(HOME)/.local/bin
 
-.PHONY: build install lint test snyk clean
+.PHONY: build install lint test snyk osv clean
 
 build:
 	go build -o bin/$(BINARY) ./cmd/server
@@ -19,6 +19,15 @@ test:
 snyk:
 	snyk test
 	snyk code test
+
+# The sources tell the module versions; only the built server tells the Go standard library it
+# was built with. Every known vulnerability counts, reachable or not, and both scans report even
+# when the first one fails.
+osv: build
+	status=0; \
+	osv-scanner scan source --recursive --no-call-analysis=go . || status=$$?; \
+	osv-scanner scan source --experimental-plugins go/binary bin/$(BINARY) || status=$$?; \
+	exit $$status
 
 clean:
 	rm -rf bin

@@ -20,14 +20,24 @@ behalf of the user.
 | Lint    | `make lint` (`golangci-lint run ./...`)                    |
 | Tests   | `make test` (`go test -race ./...`)                        |
 | Snyk    | `make snyk` (`snyk test`, `snyk code test`)                |
+| OSV     | `make osv` (OSV-Scanner on `go.mod` and the built server)  |
 
 `make snyk` needs the [Snyk CLI](https://docs.snyk.io/snyk-cli), for example
 `npm install --global snyk`, signed in with `snyk auth` or given a token in
 `SNYK_TOKEN`; Snyk Code must be enabled in the Snyk organization.
 
-GitHub Actions run `make snyk` on pushes to `main` and on pull requests
-(`.github/workflows/snyk.yml`). The workflow reads the token from the
-repository secret `SNYK_TOKEN`.
+`make osv` needs [OSV-Scanner](https://google.github.io/osv-scanner/):
+`go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.6.0`, with
+`$(go env GOPATH)/bin` on `PATH`. It scans `go.mod` for the module versions
+and the server built by `make build` for the Go standard library it was
+built with, which OSV-Scanner does not take from `go.mod`. Every known
+vulnerability fails it, whether the code reaches it or not.
+
+GitHub Actions run both in the Security workflow on pushes to `main` and on
+pull requests (`.github/workflows/security.yml`): the `snyk` job runs
+`make snyk`, and the `osv-scanner` job runs the scans of `make osv` with the
+official [OSV-Scanner action](https://github.com/google/osv-scanner-action).
+The Snyk job reads the token from the repository secret `SNYK_TOKEN`.
 
 ## Configuration
 
