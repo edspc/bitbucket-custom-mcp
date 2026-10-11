@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"testing"
@@ -183,7 +184,80 @@ func TestPipelineSubscriptionStopsWhenPaused(t *testing.T) {
 	eventually(t, func() bool { return f.watchCount() == 0 })
 }
 
+// Polling that keeps failing stops, and tells the subscribers once more, so they read the
+// pipeline and see the failure instead of waiting for updates; subscribing anew polls again.
 func TestPipelineSubscriptionStopsAfterFailures(t *testing.T) {
+	f := newFake()
+	twoSteps(f)
+	opts, updated := notifiedOptions()
+	cs := connectWith(t, f, opts, "2025-11-25")
+	uri := pipelineURI("repo-a", 1)
+	if err := subscribe(t, cs, uri); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() bool { return f.watchCount() == 1 })
+	f.mu.Lock()
+	f.pipelineGetStatus = http.StatusInternalServerError
+	failedFrom := f.pipelineGet
+	f.mu.Unlock()
+	eventually(t, func() bool { return f.watchCount() == 0 })
+	if polls := f.gets() - failedFrom; polls != maxPollFailures {
+		t.Fatalf("polled %d times after the failures began, want %d", polls, maxPollFailures)
+	}
+	expectUpdate(t, updated, uri)
+	_, err := cs.ReadResource(context.Background(), &mcp.ReadResourceParams{URI: uri})
+	if err == nil || !strings.Contains(err.Error(), "500") {
+		t.Fatalf("reading the pipeline: err = %v, want the failure", err)
+	}
+	f.mu.Lock()
+	f.pipelineGetStatus = 0
+	f.mu.Unlock()
+	if err = cs.Unsubscribe(context.Background(), &mcp.UnsubscribeParams{URI: uri}); err != nil {
+		t.Fatal(err)
+	}
+	if err = subscribe(t, cs, uri); err != nil {
+		t.Fatal(err)
+	}
+	if f.watchCount() != 1 {
+		t.Fatal("subscribing anew did not restart polling")
+	}
+}
+
+// Refusals over the rate limit are not failures: polling rests and goes on, however many come.
+func TestPipelineSubscriptionRestsOverRateLimit(t *testing.T) {
+	f := newFake()
+	p := twoSteps(f)
+	opts, updated := notifiedOptions()
+	cs := connectWith(t, f, opts, "2025-11-25")
+	// Rests are counted in poll intervals; short ones keep the test fast.
+	f.tools.pollInterval = time.Millisecond
+	uri := pipelineURI("repo-a", 1)
+	if err := subscribe(t, cs, uri); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() bool { return f.watchCount() == 1 })
+	f.mu.Lock()
+	f.pipelineGetStatus = http.StatusTooManyRequests
+	limitedFrom := f.pipelineGet
+	f.mu.Unlock()
+	eventually(t, func() bool { return f.gets() >= limitedFrom+2*maxPollFailures })
+	if f.watchCount() != 1 {
+		t.Fatal("polling stopped over the rate limit")
+	}
+	select {
+	case got := <-updated:
+		t.Fatalf("updated %s while polling rested", got)
+	default:
+	}
+	f.mu.Lock()
+	f.pipelineGetStatus = 0
+	f.setState(p, running(), ptr(completed("SUCCESSFUL")))
+	f.mu.Unlock()
+	expectUpdate(t, updated, uri)
+}
+
+// Polling rests as long as Bitbucket says rather than its own guess.
+func TestPipelineSubscriptionRestsAsBitbucketSays(t *testing.T) {
 	f := newFake()
 	twoSteps(f)
 	cs := connectWith(t, f, clientOptions(nil), "2025-11-25")
@@ -191,13 +265,85 @@ func TestPipelineSubscriptionStopsAfterFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, func() bool { return f.watchCount() == 1 })
+	var limitedAt, nextAt time.Time
 	f.mu.Lock()
-	f.failPipelineGet = true
-	failedFrom := f.pipelineGet
+	f.onPipelineGet = func(int) {
+		switch {
+		case limitedAt.IsZero():
+			limitedAt = time.Now()
+			f.pipelineGetStatus, f.pipelineGetHeader = http.StatusTooManyRequests, http.Header{"Retry-After": {"1"}}
+		case nextAt.IsZero():
+			nextAt = time.Now()
+			f.pipelineGetStatus = 0
+		}
+	}
 	f.mu.Unlock()
-	eventually(t, func() bool { return f.watchCount() == 0 })
-	if polls := f.gets() - failedFrom; polls != maxPollFailures {
-		t.Fatalf("polled %d times after the failures began, want %d", polls, maxPollFailures)
+	eventually(t, func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return !nextAt.IsZero()
+	})
+	// Without the header polling would rest for two poll intervals, 20ms here.
+	if rest := nextAt.Sub(limitedAt); rest < time.Second {
+		t.Fatalf("polled again after %v, want the second Bitbucket asked for", rest)
+	}
+	if f.watchCount() != 1 {
+		t.Fatal("polling stopped over the rate limit")
+	}
+}
+
+// Rests for the rate limit start short again once a poll gets through.
+func TestPipelineSubscriptionRateLimitRestsStartOver(t *testing.T) {
+	f := newFake()
+	twoSteps(f)
+	cs := connectWith(t, f, clientOptions(nil), "2025-11-25")
+	f.tools.pollInterval = 5 * time.Millisecond
+	if err := subscribe(t, cs, pipelineURI("repo-a", 1)); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() bool { return f.watchCount() == 1 })
+	const refused = 6 // enough to reach the longest rest, 150ms here
+	var polls []time.Time
+	f.mu.Lock()
+	f.onPipelineGet = func(int) {
+		polls = append(polls, time.Now())
+		f.pipelineGetStatus = http.StatusTooManyRequests
+		if len(polls) == refused+1 {
+			f.pipelineGetStatus = 0
+		}
+	}
+	f.mu.Unlock()
+	eventually(t, func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return len(polls) >= refused+4
+	})
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// Refused again after the poll that got through, polling rests 10ms, then 20ms.
+	if rests := polls[refused+3].Sub(polls[refused+1]); rests > 150*time.Millisecond {
+		t.Fatalf("the first two rests after a poll got through took %v, want about 30ms", rests)
+	}
+}
+
+func TestRateLimitPause(t *testing.T) {
+	tl := &tools{pollInterval: 30 * time.Second}
+	for _, tc := range []struct {
+		said, last, want time.Duration
+	}{
+		{0, 0, time.Minute},
+		{0, time.Minute, 2 * time.Minute},
+		{0, 8 * time.Minute, 15 * time.Minute},
+		{0, 15 * time.Minute, 15 * time.Minute},
+		{0, 48 * time.Minute, 15 * time.Minute},
+		{4 * time.Minute, 0, 4 * time.Minute},
+		{4 * time.Minute, 15 * time.Minute, 4 * time.Minute},
+		{48 * time.Minute, 0, 48 * time.Minute},
+		{2 * time.Second, 0, 30 * time.Second},
+	} {
+		if got := tl.rateLimitPause(tc.said, tc.last); got != tc.want {
+			t.Errorf("rateLimitPause(%v, %v) = %v, want %v", tc.said, tc.last, got, tc.want)
+		}
 	}
 }
 
@@ -211,7 +357,12 @@ func TestPipelineSubscriptionToleratesSporadicFailures(t *testing.T) {
 	}
 	eventually(t, func() bool { return f.watchCount() == 1 })
 	f.mu.Lock()
-	f.onPipelineGet = func(n int) { f.failPipelineGet = n%2 == 0 }
+	f.onPipelineGet = func(n int) {
+		f.pipelineGetStatus = 0
+		if n%2 == 0 {
+			f.pipelineGetStatus = http.StatusInternalServerError
+		}
+	}
 	start := f.pipelineGet
 	f.mu.Unlock()
 	eventually(t, func() bool { return f.gets() >= start+4*maxPollFailures })

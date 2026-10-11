@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -38,24 +39,25 @@ type fakeBitbucket struct {
 	pages      *stubPages
 	tools      *tools // set by connect, for tests that inspect or tune the server's bookkeeping
 
-	runs            map[string][]*bitbucket.Pipeline    // by repo, oldest first
-	steps           map[string][]bitbucket.Step         // by pipeline UUID
-	logs            map[string]string                   // by step UUID
-	runBodies       []string                            // bodies of the run requests, as sent
-	listQueries     []string                            // queries of the pipeline list requests
-	logRanges       []string                            // Range headers of the log requests
-	logStorage      bool                                // logs are redirected to long-term storage
-	pipelineGet     int                                 // GETs of single pipelines so far
-	failPipelineGet bool                                // GETs of single pipelines answer 500
-	schedules       map[string][]bitbucket.Schedule     // by repo
-	pullRequests    map[string]*bitbucket.PullRequest   // by repo/ID
-	prStatuses      map[string][]bitbucket.CommitStatus // by repo/ID
-	prChanges       map[string][]fakeChange             // by repo/ID
-	diffQueries     []string                            // queries of the diff requests
-	prRequests      []string                            // pull request requests, by what they ask for
-	prListQueries   []string                            // queries of the pull request list requests
-	diffStatus      int                                 // a failure the diff answers with
-	diffstatStatus  int                                 // a failure the diffstat answers with
+	runs              map[string][]*bitbucket.Pipeline    // by repo, oldest first
+	steps             map[string][]bitbucket.Step         // by pipeline UUID
+	logs              map[string]string                   // by step UUID
+	runBodies         []string                            // bodies of the run requests, as sent
+	listQueries       []string                            // queries of the pipeline list requests
+	logRanges         []string                            // Range headers of the log requests
+	logStorage        bool                                // logs are redirected to long-term storage
+	pipelineGet       int                                 // GETs of single pipelines so far
+	pipelineGetStatus int                                 // a failure GETs of single pipelines answer with
+	pipelineGetHeader http.Header                         // headers that go with the failure
+	schedules         map[string][]bitbucket.Schedule     // by repo
+	pullRequests      map[string]*bitbucket.PullRequest   // by repo/ID
+	prStatuses        map[string][]bitbucket.CommitStatus // by repo/ID
+	prChanges         map[string][]fakeChange             // by repo/ID
+	diffQueries       []string                            // queries of the diff requests
+	prRequests        []string                            // pull request requests, by what they ask for
+	prListQueries     []string                            // queries of the pull request list requests
+	diffStatus        int                                 // a failure the diff answers with
+	diffstatStatus    int                                 // a failure the diffstat answers with
 	// onPipelineGet runs, with the lock held, before the n-th GET of a single pipeline is
 	// answered, so a test can move a pipeline along while it is watched.
 	onPipelineGet func(n int)
@@ -423,8 +425,9 @@ func (f *fakeBitbucket) handler(t *testing.T) http.Handler {
 		if f.onPipelineGet != nil {
 			f.onPipelineGet(f.pipelineGet)
 		}
-		if f.failPipelineGet {
-			w.WriteHeader(http.StatusInternalServerError)
+		if f.pipelineGetStatus != 0 {
+			maps.Copy(w.Header(), f.pipelineGetHeader)
+			w.WriteHeader(f.pipelineGetStatus)
 			return
 		}
 		p := f.findRun(r.PathValue("repo"), r.PathValue("id"))

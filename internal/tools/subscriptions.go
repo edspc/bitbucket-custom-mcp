@@ -19,6 +19,12 @@ const (
 	// watchLifetime bounds the polling of a pipeline that runs for too long.
 	watchLifetime   = 24 * time.Hour
 	maxPollFailures = 5
+	// Polling refused over Bitbucket's rate limit rests as long as the response says, but at
+	// least a poll interval. Without a word on how long, it rests firstRateLimitPause poll
+	// intervals (a minute), then twice the last rest, up to maxRateLimitPause (a quarter of an
+	// hour): requests leave Bitbucket's rolling hour one by one.
+	firstRateLimitPause = 2
+	maxRateLimitPause   = 30
 )
 
 // pipelineWatch polls one subscribed pipeline for the sessions that subscribed to it.
@@ -117,7 +123,8 @@ func (t *tools) unsubscribe(_ context.Context, req *mcp.UnsubscribeRequest) erro
 func settled(s bitbucket.State) bool { return s.Completed() || s.Paused() }
 
 // poll tells subscribers about every change of the pipeline until it settles, everybody
-// unsubscribes, it keeps failing or its lifetime passes.
+// unsubscribes, it keeps failing or its lifetime passes. Refusals over Bitbucket's rate limit are
+// not failures: polling rests until the limit lets it go on.
 func (t *tools) poll(ctx context.Context, uri string, w *pipelineWatch, prev pipelineView) {
 	defer func() {
 		w.cancel()
@@ -128,15 +135,22 @@ func (t *tools) poll(ctx context.Context, uri string, w *pipelineWatch, prev pip
 		t.mu.Unlock()
 	}()
 	failures := 0
-	tick := time.NewTicker(t.pollInterval)
-	defer tick.Stop()
+	var pause time.Duration // the last rest for the rate limit, until a poll succeeds
+	wait := t.pollInterval
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-tick.C:
+		case <-time.After(wait):
 		}
+		wait = t.pollInterval
 		p, view, err := t.lookPipeline(ctx, uri)
+		if said, limited := bitbucket.RateLimited(err); limited {
+			pause = t.rateLimitPause(said, pause)
+			wait = pause
+			t.log.WarnContext(ctx, "polling a subscribed pipeline rests for Bitbucket's rate limit", "uri", uri, "pause", pause, "error", err)
+			continue
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -144,11 +158,16 @@ func (t *tools) poll(ctx context.Context, uri string, w *pipelineWatch, prev pip
 			failures++
 			t.log.WarnContext(ctx, "polling a subscribed pipeline", "uri", uri, "failures", failures, "error", err)
 			if failures >= maxPollFailures {
+				// Subscribers would wait for updates that never come. Reading the pipeline once
+				// more shows them the failure while it lasts; subscribing anew polls again.
+				if err = t.server.ResourceUpdated(ctx, &mcp.ResourceUpdatedNotificationParams{URI: uri}); err != nil {
+					t.log.WarnContext(ctx, "notifying subscribers that polling stopped", "uri", uri, "error", err)
+				}
 				return
 			}
 			continue
 		}
-		failures = 0
+		failures, pause = 0, 0
 		if len(changes(prev, view)) > 0 {
 			if err = t.server.ResourceUpdated(ctx, &mcp.ResourceUpdatedNotificationParams{URI: uri}); err != nil {
 				t.log.WarnContext(ctx, "notifying subscribers of a pipeline", "uri", uri, "error", err)
@@ -159,4 +178,14 @@ func (t *tools) poll(ctx context.Context, uri string, w *pipelineWatch, prev pip
 			return
 		}
 	}
+}
+
+// rateLimitPause is how long polling rests after Bitbucket refused a poll over its rate limit,
+// saying to wait for said, or not saying when it is zero; last is the rest before, if the poll
+// before was refused too.
+func (t *tools) rateLimitPause(said, last time.Duration) time.Duration {
+	if said > 0 {
+		return max(said, t.pollInterval)
+	}
+	return min(max(2*last, firstRateLimitPause*t.pollInterval), maxRateLimitPause*t.pollInterval)
 }

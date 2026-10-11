@@ -232,6 +232,13 @@ leaves, polling fails five times in a row or 24 hours pass. Subscriptions
 share the polling limit of `watch_pipeline`; a pipeline that has already
 completed or paused is accepted but not polled.
 
+A refusal over the [rate limit](#rate-limit) is not a failure: polling rests
+as long as the response says, but at least 30 seconds, or else for a minute,
+doubling with every refusal in a row up to 15 minutes, and then goes on. When
+polling stops after the failures, subscribers get one more
+`notifications/resources/updated`: reading the resource then shows the error
+while it lasts, and unsubscribing and subscribing again restarts polling.
+
 ### Secret page
 
 Secrets — access tokens and values of secured variables — never pass through
@@ -247,6 +254,17 @@ removed.
 The page closes as soon as the values arrive, when the user declines, or after
 10 minutes; at most 3 pages are open at a time. The MCP client must support URL
 elicitation (MCP 2025-11-25 or later).
+
+### Rate limit
+
+Bitbucket counts the requests of a user over a rolling hour, 1,000 an hour to
+repository data, and refuses more with `429`. Here the user is the account of
+`BITBUCKET_EMAIL`, so every other tool that uses it draws on the same
+allowance. A tool call that is refused fails without retrying, and its error
+says when to try again: after the wait the response gives in `Retry-After`,
+or else in Bitbucket's undocumented `X-RateLimit-Reset` (a wait over an hour
+is ignored as a misread header), or in a few minutes when it gives none.
+[Status subscriptions](#status-subscriptions) rest instead.
 
 ## Setup in Claude Code
 

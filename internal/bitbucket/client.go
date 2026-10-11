@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 const (
@@ -47,6 +48,8 @@ type APIError struct {
 	Path    string
 	Status  int
 	Message string
+	// RetryAfter is how long a 429 response said to wait; zero when it did not say.
+	RetryAfter time.Duration
 }
 
 func (e *APIError) Error() string {
@@ -54,11 +57,17 @@ func (e *APIError) Error() string {
 	if msg == "" {
 		msg = http.StatusText(e.Status)
 	}
+	if e.Status == http.StatusTooManyRequests {
+		msg = strings.TrimSuffix(msg, ".") + ". " + rateLimitAdvice(e.RetryAfter)
+	}
 	return fmt.Sprintf("bitbucket %s %s: %d: %s", e.Method, e.Path, e.Status, msg)
 }
 
 func newAPIError(method, path string, resp *http.Response) *APIError {
 	apiErr := &APIError{Method: method, Path: path, Status: resp.StatusCode}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		apiErr.RetryAfter = rateLimitWait(resp.Header, time.Now())
+	}
 	var payload struct {
 		Error struct {
 			Message string `json:"message"`
