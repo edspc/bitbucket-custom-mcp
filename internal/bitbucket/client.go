@@ -42,6 +42,9 @@ func New(httpClient *http.Client, cfg Config) *Client {
 	return &Client{http: &hc, cfg: cfg}
 }
 
+// Workspace names the authority shown on approval pages, without exposing credentials.
+func (c *Client) Workspace() string { return c.cfg.Workspace }
+
 // APIError carries the HTTP status and Bitbucket's own error message, never the response body.
 type APIError struct {
 	Method  string
@@ -124,27 +127,60 @@ func (c *Client) send(ctx context.Context, method, rawURL string, auth func(*htt
 		return err
 	}
 	auth(req)
+	sensitive := strings.HasPrefix(req.Header.Get("Authorization"), "Bearer ") || secretPayload(in)
 	req.Header.Set("Accept", "application/json")
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
+		if sensitive {
+			// A transport or proxy error can also reflect headers or a request body.
+			switch {
+			case errors.Is(err, context.Canceled):
+				err = context.Canceled
+			case errors.Is(err, context.DeadlineExceeded):
+				err = context.DeadlineExceeded
+			default:
+				err = errors.New("request failed; upstream details withheld for a secret-bearing request")
+			}
+		}
 		// The transport error includes the URL, which never holds credentials.
 		return fmt.Errorf("bitbucket %s %s: %w", method, req.URL.Path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 300 {
-		return newAPIError(method, req.URL.Path, resp)
+		err := newAPIError(method, req.URL.Path, resp)
+		if sensitive {
+			err.Message = "" // An API validation message may echo a submitted secret.
+		}
+		return err
 	}
 	if out == nil {
 		return nil
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		if sensitive {
+			return fmt.Errorf("bitbucket %s %s: invalid response to a secret-bearing request", method, req.URL.Path)
+		}
 		return fmt.Errorf("bitbucket %s %s: decoding response: %w", method, req.URL.Path, err)
 	}
 	return nil
+}
+
+func secretPayload(in any) bool {
+	switch v := in.(type) {
+	case Variable:
+		return v.Secured
+	case RunRequest:
+		for _, variable := range v.Variables {
+			if variable.Secured {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // get sends a GET of rawURL with the given headers and returns the response as it comes.
@@ -182,22 +218,13 @@ func (c *Client) redirectTarget(ctx context.Context, path string) (*url.URL, err
 
 // list follows Bitbucket's `next` links and returns all values of a paginated collection.
 func list[T any](ctx context.Context, c *Client, path string) ([]T, error) {
-	return listFrom[T](ctx, c, path, APIURL+path+"?pagelen=100")
-}
-
-// listFrom is list starting from the API URL of the first page; path names the collection in
-// errors.
-func listFrom[T any](ctx context.Context, c *Client, path, next string) ([]T, error) {
 	var all []T
-	for next != "" {
+	for next := APIURL + path + "?pagelen=100"; next != ""; {
 		// Credentials go only to the API host, whatever `next` says.
 		if !inAPI(next) {
 			return nil, fmt.Errorf("bitbucket GET %s: unexpected pagination link outside the API", path)
 		}
-		var page struct {
-			Values []T    `json:"values"`
-			Next   string `json:"next"`
-		}
+		var page apiPage[T]
 		if err := c.send(ctx, http.MethodGet, next, c.basicAuth, nil, &page); err != nil {
 			return nil, err
 		}

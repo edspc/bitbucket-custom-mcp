@@ -15,7 +15,7 @@ func TestListVariablesHidesSecuredValues(t *testing.T) {
 	f := newFake()
 	f.vars["repo-b"] = []bitbucket.Variable{{UUID: "{v1}", Key: "PLAIN", Value: "visible"}, {UUID: "{v2}", Key: "SECRET", Value: "hidden", Secured: true}}
 	got := decodeResult[listVariablesResult](t, mustCall(t, connect(t, f, nil), "list_variables", map[string]any{"scope": "repository", "repo": "repo-b"}))
-	want := listVariablesResult{Place: "repository variables of repo-b", Variables: []variableView{{Name: "PLAIN", Value: "visible"}, {Name: "SECRET", Secured: true}}}
+	want := listVariablesResult{ContentTrust: "untrusted", Place: "repository variables of repo-b", Variables: []variableView{{Name: "PLAIN", Value: "visible"}, {Name: "SECRET", Secured: true}}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("result = %+v", got)
 	}
@@ -33,14 +33,14 @@ func TestListVariablesOfWorkspaceAndEnvironment(t *testing.T) {
 	if isErr || !strings.Contains(out, `"name":"ENV"`) || !strings.Contains(out, `deployment environment \"Test\" of repo-b`) {
 		t.Fatalf("deployment result = %s (error %v)", out, isErr)
 	}
-	if out, isErr = call(t, cs, "list_variables", map[string]any{"scope": "deployment", "repo": "repo-b", "environment": "Staging"}); !isErr || !strings.Contains(out, "available: Production, Test") {
+	if out, isErr = call(t, cs, "list_variables", map[string]any{"scope": "deployment", "repo": "repo-b", "environment": "Staging"}); !isErr || !strings.Contains(out, `available: "Production", "Test"`) {
 		t.Fatalf("unknown environment = %s (error %v)", out, isErr)
 	}
 }
 
 func TestSetPlainVariable(t *testing.T) {
 	f := newFake()
-	cs := connect(t, f, nil)
+	cs := connectApproving(t, f)
 	args := map[string]any{"scope": "repository", "repo": "repo-b", "name": "REGION", "value": "eu-west-1"}
 	if out, isErr := call(t, cs, "set_variable", args); isErr || !strings.Contains(out, `"created"`) {
 		t.Fatalf("result = %s (error %v)", out, isErr)
@@ -85,7 +85,7 @@ func TestSetSecuredVariableOnlyThroughThePage(t *testing.T) {
 	if len(asked) != 1 || asked[0].Mode != "url" || !strings.Contains(asked[0].Message, "API_KEY") {
 		t.Fatalf("elicitation requests = %+v", asked)
 	}
-	body := f.pages.do(httptestGet(asked[0].URL)).Body.String()
+	body := f.pages.openedPage()
 	for _, wantText := range []string{"set_variable", "Enter the value of the secured variable API_KEY for workspace variables.", `name="API_KEY"`} {
 		if !strings.Contains(body, wantText) {
 			t.Errorf("page does not contain %q", wantText)
@@ -141,7 +141,7 @@ func TestSetVariableValidatesInput(t *testing.T) {
 func TestDeleteVariable(t *testing.T) {
 	f := newFake()
 	f.vars["repo-b/{env-prod}"] = []bitbucket.Variable{{UUID: "{v1}", Key: "KEEP"}, {UUID: "{v2}", Key: "DROP", Secured: true}}
-	cs := connect(t, f, nil)
+	cs := connectApproving(t, f)
 	args := map[string]any{"scope": "deployment", "repo": "repo-b", "environment": "Production", "name": "DROP"}
 	if out, isErr := call(t, cs, "delete_variable", args); isErr || !strings.Contains(out, `"deleted"`) {
 		t.Fatalf("result = %s (error %v)", out, isErr)

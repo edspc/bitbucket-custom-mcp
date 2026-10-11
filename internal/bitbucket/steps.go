@@ -60,11 +60,10 @@ func (c *Client) StepLog(ctx context.Context, repo, pipelineUUID, stepUUID strin
 	var tail []byte
 	var dropped bool
 	switch resp.StatusCode {
-	case http.StatusOK:
+	case http.StatusOK, http.StatusPartialContent:
 		tail, dropped, err = readTail(resp.Body, maxBytes)
-	case http.StatusPartialContent:
-		tail, dropped, err = readTail(resp.Body, maxBytes)
-		// Earlier output exists when the returned range does not start at the beginning.
+		// Earlier output exists when a returned range does not start at the beginning; a whole
+		// log has no Content-Range.
 		var start int
 		_, _ = fmt.Sscanf(resp.Header.Get("Content-Range"), "bytes %d-", &start)
 		dropped = dropped || start > 0

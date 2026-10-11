@@ -8,46 +8,56 @@ on:
 permissions:
   contents: read
 
+# Every action, image and tool is pinned by commit, digest or checksum: a tag can be moved to
+# other code, which would then run next to SNYK_TOKEN or decide what the scans report.
 jobs:
   snyk:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
+      # The standalone CLI, checked against its published SHA-256; the npm package would pull
+      # dependencies by version range into the process that holds the token.
       - name: Install the Snyk CLI
-        run: npm install --global snyk@1.1308.0
+        run: |
+          curl --fail --silent --show-error --location --output "$RUNNER_TEMP/snyk" \
+            https://downloads.snyk.io/cli/v1.1308.0/snyk-linux
+          echo "a916d3ec9e6c27d56cf67664459885512758a1ae94418ba430fcb92e86c32ae1  $RUNNER_TEMP/snyk" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/snyk"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
       - name: Scan dependencies and code
         run: make snyk
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
-  # The scans of make osv, run by the official OSV-Scanner action.
+  # The scans of make osv, by the scanner of the official OSV-Scanner action. Its image is run
+  # by digest, since the action names it by a tag; the scanner is called directly, so its own
+  # exit code fails the step.
   osv-scanner:
     runs-on: ubuntu-latest
+    env:
+      OSV_SCANNER: ghcr.io/google/osv-scanner-action@sha256:71ad04ab2f8798be47870f9b18817ad317c2f8f2f97aa6726ba10d5578bc174a # v2.6.0
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
       - name: Build the server
         id: build
         run: make build
       - name: Scan dependencies
-        uses: google/osv-scanner-action/osv-scanner-action@7f58dd6750d78fc29a900ba64b1a0f946f62fba4 # v2.6.0
-        with:
-          scan-args: |-
-            --recursive
-            --no-call-analysis=go
-            ./
+        run: >-
+          docker run --rm --volume "$PWD:/src:ro" --workdir /src --entrypoint /root/osv-scanner "$OSV_SCANNER"
+          scan source --recursive --no-call-analysis=go ./
       - name: Scan the built server
         # Runs even when the dependency scan failed, so both report.
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        uses: google/osv-scanner-action/osv-scanner-action@7f58dd6750d78fc29a900ba64b1a0f946f62fba4 # v2.6.0
-        with:
-          # The file, not its directory: the action passes a scan that finds nothing to scan,
-          # while a missing file fails it.
-          scan-args: |-
-            --experimental-plugins=go/binary
-            bin/bitbucket-custom-mcp
+        run: >-
+          docker run --rm --volume "$PWD:/src:ro" --workdir /src --entrypoint /root/osv-scanner "$OSV_SCANNER"
+          scan source --experimental-plugins=go/binary bin/bitbucket-custom-mcp

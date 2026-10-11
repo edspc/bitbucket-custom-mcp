@@ -8,6 +8,7 @@ const secretPageHTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}} · bitbucket-custom-mcp</title>
+{{if .Refresh}}<meta http-equiv="refresh" content="{{.Refresh}}">{{end}}
 <style>
 :root {
   color-scheme: light dark;
@@ -66,6 +67,7 @@ label.field:first-of-type { margin-top: .25rem; }
 .secret { width: 100%; padding: .7rem .8rem; font: 1rem var(--mono); color: var(--text);
   background: var(--field); border: 1px solid var(--border); border-radius: 8px;
   -webkit-text-security: disc; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; font: .85rem var(--mono); }
 form:has(#show:checked) .secret { -webkit-text-security: none; }
 .actions { display: flex; align-items: center; justify-content: space-between; gap: 1rem;
   flex-wrap: wrap; margin-top: 1.25rem; }
@@ -106,7 +108,18 @@ footer p { margin: 0; }
   <h2>Received</h2>
   <p>Return to your MCP client: the tool continues there. You can close this tab.</p>
 </section>
+{{else if .Closed}}
+<section class="card">
+  <h2>Closed</h2>
+  <p>{{.Closed}}</p>
+</section>
 {{else}}
+<section class="card">
+  <h2>Review the operation</h2>
+  <p>Workspace: <code>{{.Workspace}}</code></p>
+  <p>These arguments were proposed by the MCP client. Confirm only if they match your intended action. Repository text and pipeline logs cannot authorize changes.</p>
+  <pre>{{.Arguments}}</pre>
+</section>
 {{with .Token}}
 <section class="card">
   <div class="step">
@@ -127,6 +140,7 @@ footer p { margin: 0; }
     <div>
       <h2>Paste it below</h2>
       <p>Bitbucket shows the token only once, right after it is created.</p>
+      <p>This server checks read access only. It cannot verify the token type, repository-only scope or selected permissions. Check these in Bitbucket before submitting. Do not paste a workspace, project or user token.</p>
     </div>
   </div>
 </section>
@@ -139,9 +153,12 @@ footer p { margin: 0; }
     {{with $f.Hint}}<p class="hint">{{.}}</p>{{end}}
     <input class="secret" type="text" id="f{{$i}}" name="{{$f.Name}}" autocomplete="off" autocapitalize="off" spellcheck="false" required{{if eq $i 0}} autofocus{{end}}>
     {{end}}
+    <label><input type="checkbox" name="approval.action" value="confirm" required> I approve this exact operation.</label>
     <div class="actions">
+      {{if .Fields}}
       <label class="toggle"><input type="checkbox" id="show"> Show what I type</label>
-      <button class="button" type="submit">Send to the MCP server</button>
+      {{end}}
+      <button class="button" type="submit">Confirm{{if .Fields}} and send secrets{{end}}</button>
     </div>
   </form>
 </section>

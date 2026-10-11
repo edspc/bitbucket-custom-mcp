@@ -28,9 +28,9 @@ type watchPipelineInput struct {
 }
 
 type watchPipelineResult struct {
-	Outcome  string       `json:"outcome" jsonschema:"why the watch ended: 'completed'; 'paused' when the pipeline waits for someone to run a manual step; or 'timeout' when it still runs, then call watch_pipeline again"`
-	Updates  []string     `json:"updates" jsonschema:"status changes seen while watching, oldest first, with local time"`
-	Pipeline pipelineView `json:"pipeline"`
+	Outcome  string        `json:"outcome" jsonschema:"why the watch ended: 'completed'; 'paused' when the pipeline waits for someone to run a manual step; or 'timeout' when it still runs, then call watch_pipeline again"`
+	Updates  []string      `json:"updates" jsonschema:"status changes seen while watching, oldest first, with local time"`
+	Pipeline *pipelineView `json:"pipeline,omitempty" jsonschema:"last complete pipeline status; omitted if the first poll did not finish before timeout"`
 }
 
 // watchPipeline follows a pipeline until it completes, pauses or the timeout passes. Each poll
@@ -61,45 +61,55 @@ func (t *tools) watchPipeline(ctx context.Context, req *mcp.CallToolRequest, in 
 		t.mu.Unlock()
 	}()
 
-	deadline := time.Now().Add(timeout)
-	updates := []string{}
+	watchCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	result := watchPipelineResult{Updates: []string{}}
 	var prev pipelineView
 	for poll := 1; ; poll++ {
 		var p bitbucket.Pipeline
 		var view pipelineView
-		if p, view, err = t.pipelineStatus(ctx, in.Repo, in.Pipeline); err != nil {
+		if p, view, err = t.pipelineStatus(watchCtx, in.Repo, in.Pipeline); err != nil {
+			if ctx.Err() != nil {
+				return nil, watchPipelineResult{}, ctx.Err()
+			}
+			if watchCtx.Err() != nil {
+				result.Outcome = "timeout"
+				return nil, result, nil
+			}
 			return nil, watchPipelineResult{}, err
 		}
 		if poll > 1 {
 			now := time.Now().Format("15:04:05")
 			for _, c := range changes(prev, view) {
-				updates = append(updates, now+" "+c)
+				result.Updates = append(result.Updates, now+" "+c)
 			}
 		}
 		prev = view
+		result.Pipeline = &view
 		if token := req.Params.GetProgressToken(); token != nil {
-			err = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{ProgressToken: token, Progress: float64(poll), Message: summary(view)})
+			err = req.Session.NotifyProgress(watchCtx, &mcp.ProgressNotificationParams{ProgressToken: token, Progress: float64(poll), Message: summary(view)})
 			if err != nil {
 				t.log.WarnContext(ctx, "sending pipeline progress", "error", err)
 			}
 		}
 
-		result := watchPipelineResult{Updates: updates, Pipeline: view}
 		switch {
 		case p.State.Completed():
 			result.Outcome = "completed"
 		case p.State.Paused():
 			result.Outcome = "paused"
-		case !time.Now().Before(deadline):
-			result.Outcome = "timeout"
 		}
 		if result.Outcome != "" {
 			return nil, result, nil
 		}
 		select {
-		case <-ctx.Done():
-			return nil, watchPipelineResult{}, ctx.Err()
-		case <-time.After(min(t.pollInterval, time.Until(deadline))):
+		case <-watchCtx.Done():
+			if err = ctx.Err(); err != nil {
+				return nil, watchPipelineResult{}, err
+			}
+			result.Outcome = "timeout"
+			return nil, result, nil
+		case <-time.After(t.pollInterval):
 		}
 	}
 }

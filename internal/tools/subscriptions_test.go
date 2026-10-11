@@ -84,13 +84,13 @@ func TestPipelineSubscriptionNotifiesChanges(t *testing.T) {
 		expectQuiet()
 
 		f.mu.Lock()
-		f.setState(p, running(), ptr(completed("SUCCESSFUL")), &bitbucket.State{Name: "IN_PROGRESS"})
+		f.setState(p, running(), new(completed("SUCCESSFUL")), &bitbucket.State{Name: "IN_PROGRESS"})
 		f.mu.Unlock()
 		expectUpdate(t, updated, uri)
 		// Later polls compare with the new state, so the change is reported once.
 		expectQuiet()
 		f.mu.Lock()
-		f.setState(p, completed("SUCCESSFUL"), nil, ptr(completed("SUCCESSFUL")))
+		f.setState(p, completed("SUCCESSFUL"), nil, new(completed("SUCCESSFUL")))
 		f.mu.Unlock()
 		expectUpdate(t, updated, uri)
 
@@ -251,7 +251,7 @@ func TestPipelineSubscriptionRestsOverRateLimit(t *testing.T) {
 	}
 	f.mu.Lock()
 	f.pipelineGetStatus = 0
-	f.setState(p, running(), ptr(completed("SUCCESSFUL")))
+	f.setState(p, running(), new(completed("SUCCESSFUL")))
 	f.mu.Unlock()
 	expectUpdate(t, updated, uri)
 }
@@ -393,7 +393,7 @@ func TestPipelineSubscriptionOfTwoSessions(t *testing.T) {
 		t.Fatal("the pipeline must stay polled for the other session")
 	}
 	f.mu.Lock()
-	f.setState(p, running(), ptr(completed("SUCCESSFUL")))
+	f.setState(p, running(), new(completed("SUCCESSFUL")))
 	f.mu.Unlock()
 	// The remaining session is still told.
 	expectUpdate(t, updated, uri)

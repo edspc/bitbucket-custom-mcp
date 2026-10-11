@@ -21,8 +21,8 @@ type Environment struct {
 // VariableScope selects where a variable lives: the whole workspace when Repo is empty, the
 // whole repository, or one deployment environment of it when EnvironmentUUID is set.
 type VariableScope struct {
-	Repo            string
-	EnvironmentUUID string
+	Repo            string `json:"repo,omitempty"`
+	EnvironmentUUID string `json:"environment_uuid,omitempty"`
 }
 
 func (c *Client) variablesPath(s VariableScope, parts ...string) string {

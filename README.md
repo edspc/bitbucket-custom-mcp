@@ -23,7 +23,8 @@ behalf of the user.
 | OSV     | `make osv` (OSV-Scanner on `go.mod` and the built server)  |
 
 `make snyk` needs the [Snyk CLI](https://docs.snyk.io/snyk-cli), for example
-`npm install --global snyk`, signed in with `snyk auth` or given a token in
+the [standalone binary](https://docs.snyk.io/snyk-cli/install-or-update-the-snyk-cli),
+signed in with `snyk auth` or given a token in
 `SNYK_TOKEN`; Snyk Code must be enabled in the Snyk organization.
 
 `make osv` needs [OSV-Scanner](https://google.github.io/osv-scanner/):
@@ -35,16 +36,25 @@ vulnerability fails it, whether the code reaches it or not.
 
 GitHub Actions run both in the Security workflow on pushes to `main` and on
 pull requests (`.github/workflows/security.yml`): the `snyk` job runs
-`make snyk`, and the `osv-scanner` job runs the scans of `make osv` with the
-official [OSV-Scanner action](https://github.com/google/osv-scanner-action).
-The Snyk job reads the token from the repository secret `SNYK_TOKEN`.
+`make snyk` with the standalone Snyk CLI, and the `osv-scanner` job runs the
+scans of `make osv` with the scanner image of the official
+[OSV-Scanner action](https://github.com/google/osv-scanner-action). Actions
+are pinned by commit, the image by digest and the Snyk CLI by its SHA-256, and
+checkouts keep no credentials. The Snyk job reads the token from the
+repository secret `SNYK_TOKEN`.
 
 ## Configuration
 
 Configuration comes from environment variables only. The Bitbucket token is a
-secret: in the MCP client's `env` reference it as `"${VAR}"`, a 1Password
-secret reference (see below) or keep it in a user-scoped config — never a
-literal value in a committed file such as `.mcp.json`.
+secret that reaches every repository its account can, so only this server's
+process should get it: start the server through a secret manager that
+resolves a reference at launch, such as 1Password's `op run` (see
+[Setup in Claude Code](#setup-in-claude-code)). Do not export the token in a
+shell profile, which `"${VAR}"` in the MCP client's `env` needs: the client
+passes its environment to every MCP server, hook and shell command it starts,
+so other servers and any command a prompt injection gets run could read it.
+Do not write the token itself into any config either, `~/.claude.json`
+included: every process of the user can read it.
 
 | Variable              | Value                                              |
 |-----------------------|----------------------------------------------------|
@@ -57,6 +67,67 @@ The API token needs these scopes: `read:repository:bitbucket`,
 `delete:ssh-key:bitbucket`, `read:pipeline:bitbucket`,
 `write:pipeline:bitbucket`, `admin:pipeline:bitbucket`,
 `read:pullrequest:bitbucket`.
+
+### Confirmation and access limits
+
+Every tool that changes Bitbucket requires a one-time confirmation on the
+server's local browser page, including operations that take no secrets. The MCP
+client must support URL elicitation (MCP 2025-11-25 or later); without it, writes
+are refused. Opening the page or returning `accept` through MCP does not approve
+a change: the user must review the arguments and submit the approval checkbox.
+Approvals are bound to the tool, its arguments and the MCP session, expire after
+10 minutes and cannot be reused.
+
+The page shows the workspace and complete non-secret arguments. For a pipeline
+run, the server resolves the revision to a full commit SHA before approval and
+runs that SHA even if the branch moves while the page is open. Both plain
+variables and the names of secured variables are shown. A schedule authorizes
+future runs of the selected branch, whose head can change over time.
+
+Variable changes also show the resolved deployment environment UUID and the UUID
+of a variable being replaced. If either destination or replacement changes while
+approval is pending, the operation is refused and requires a fresh confirmation.
+The destination, replacement UUID and secured flag are checked again after browser
+submission, immediately before a variable is written or deleted. Token links also
+finish the read-access probe before this final check. A key link likewise reads
+the source's public key and the target's Access Keys again before it changes
+them, and a schedule deletion reads the schedule again.
+
+These optional environment variables narrow the server's authority. Each is a
+JSON array of exact names, with no wildcard expansion. An unset variable allows
+all names within the configured workspace; `[]` denies all. Invalid arrays stop
+the server rather than silently removing the restriction.
+
+| Variable | Example | Restriction |
+|----------|---------|-------------|
+| `BITBUCKET_ALLOWED_REPOS` | `["repo-a","repo-b"]` | Applies to both repositories of a link and all repository tools/resources; workspace variables are disabled when this list is set |
+| `BITBUCKET_ALLOWED_TOOLS` | `["get_pull_request","list_pull_requests"]` | Only these tools can execute; pipeline resources and subscriptions also require `get_pipeline` |
+| `BITBUCKET_ALLOWED_REFS` | `["branch:main","tag:v1.2.0"]` | Only these refs can run pipelines, only at commits on them, or have schedules added/deleted |
+
+Keep these settings in the operator's environment or user-scoped MCP config,
+outside the model's control. Use a dedicated account/token with only the
+Bitbucket permissions needed by that environment.
+
+### Untrusted repository content
+
+PR titles/descriptions, diffs, pipeline logs, variable values and other Bitbucket
+content are untrusted data. Read results label external content with
+`content_trust: "untrusted"`; neither that content nor tool annotations authorize
+a write. A prompt injection in this data cannot replace the required browser
+submission. Clients must still treat external content as data, and must not
+automatically confirm operations based on instructions in it.
+
+The MCP client, browser and local machine are trusted. Do not give an untrusted
+model arbitrary local execution or HTTP access to the approval pages: a process
+with that access can impersonate a browser submission. This server's approval
+barrier does not make a model immune to prompt injection or protect unrelated
+tools provided by the client.
+
+For requests containing secured values or a supplied bearer token, API,
+transport and decoding errors withhold upstream details that could reflect a
+secret. HTTP status, operation and rate-limit advice remain available. This
+protects the secret input/error path; pipeline code is still responsible for
+not exposing secrets in its own output.
 
 ## Tools
 
@@ -98,9 +169,15 @@ Stores a repository access token of A as a secured pipeline variable of B.
 Bitbucket has no API to create repository access tokens, so the user creates
 the token and pastes it into the [secret page](#secret-page). The page links
 to A's access token page and lists the name and the permissions to select. The
-server checks the token by reading something in A that its permissions allow
-(the repository, pipelines or webhooks), which catches a token created in
-another repository, and writes it into the secured variable.
+server checks only read access to one endpoint in A (the repository, pipelines
+or webhooks), chosen from the requested permissions, and writes the token into
+the secured variable. Success does not verify the token type, repository-only
+scope or actual permissions: a broader token can pass, and a read-only token can
+pass even when write permissions were requested. Bitbucket does not provide token
+metadata through this probe. Verify the token's repository and permissions in
+Bitbucket before submitting; do not paste a workspace, project or user token.
+The approval page states this limit, and success reports
+`token_validation: "read_access_only"`.
 
 ### Pipeline variables
 
@@ -128,7 +205,7 @@ The variable tools work at one of three places, chosen by `scope`:
 |--------------------|------------------------------------------------------------------|
 | `repo`             | Repository                                                       |
 | `branch` / `tag`   | Ref to build; exactly one of them                                |
-| `commit`           | Commit to build in the context of the ref; its latest by default |
+| `commit`           | Commit to build in the context of the ref; its latest by default. It must be on the ref: a commit of another branch would run its own code as the ref's |
 | `custom`           | Custom pipeline (`pipelines.custom.<name>`); by default the pipeline `bitbucket-pipelines.yml` defines for the ref |
 | `variables`        | Plain variables of the custom pipeline: `[{"name", "value"}]`    |
 | `secret_variables` | Names of secured variables of the custom pipeline; the user enters their values on the [secret page](#secret-page), and they are used for this run only |
@@ -140,7 +217,8 @@ bitbucket.org and its `resource_uri`.
 
 `list_pipelines` returns the latest pipelines of `repo`, newest first
 (`limit`, 10 by default and at most 50; `branch` to filter). `get_pipeline`
-returns one `pipeline`, by build number or UUID, with the state of each step.
+returns one `pipeline`, by build number or UUID (with or without its braces),
+with the state of each step.
 States read like `PENDING`, `IN_PROGRESS/RUNNING`, `IN_PROGRESS/PAUSED` (waits
 for a manual step) or `COMPLETED/FAILED`.
 
@@ -152,6 +230,10 @@ seconds. It returns the outcome (`completed`, `paused` or `timeout`), every
 status change of the pipeline and its steps seen on the way, and the final
 status. When the client sends a progress token, each poll is also reported as
 a progress notification.
+
+The timeout also cancels API requests and progress notifications. On timeout the
+result contains the last complete status; `pipeline` is omitted if the first poll
+did not finish. Client cancellation remains an error.
 
 A poll costs two API requests, and Bitbucket allows 1,000 requests an hour to
 repository data, so at most two pipelines are polled at a time, by
@@ -177,9 +259,15 @@ year (`0 0 2 * * ? *` runs at 02:00 UTC every day).
   pipeline is written the way results show it: `custom: <name>`,
   `branches: <pattern>` with the pattern as in `bitbucket-pipelines.yml`, or
   `default`. An identical schedule is reported as `already_exists` and not
-  added twice.
+  added twice. The server serializes the duplicate check and creation after
+  browser approval, so concurrent calls in this process cannot create
+  identical schedules. Separate server processes and changes made directly in
+  Bitbucket do not share this lock.
 - `delete_schedule` deletes the `schedule` with the given UUID from
-  `list_schedules`.
+  `list_schedules`. The schedule is read again after browser approval, right
+  before it is deleted: if it changed meanwhile (branch, pipeline, cron or
+  whether it is enabled) or its branch is no longer allowed, nothing is
+  deleted and the call has to be made again.
 
 ### Pull requests
 
@@ -202,11 +290,18 @@ page on bitbucket.org. A call costs one API request.
   request from a fork), and the destination branch it merges into;
 - reviewers and other participants who decided, with their state
   (`approved`, `changes_requested`, or `pending` for a reviewer);
-- build results reported for it, such as pipeline runs;
+- the latest 50 build results reported for it, newest first, such as pipeline runs;
 - the paths of the changed files with their status and added and removed
   lines, and how many there are, 200 a page: `files_next` is passed back as
   `files_from` for the next page. Later pages leave out the description,
   reviewers and builds.
+
+Build results are fetched in one bounded API request. `builds_truncated` indicates
+that more exist; `builds_total` is included only when Bitbucket reports the count.
+File pages are fetched directly from the requested offset, with at most three
+API page reads per call, rather than downloading all earlier or later pages.
+`files_total` is omitted when Bitbucket does not report it. Each API collection
+page is limited to 4 MiB; an oversized response fails the request.
 
 With `paths`, some of the changed files, it returns their diff instead: of
 the source branch against the commit where it forked from the destination,
@@ -220,6 +315,14 @@ A part of a diff or a page of files is refused once the pull request has new
 commits, so they never mix two versions; start again without `diff_from` or
 `files_from` then.
 
+Bitbucket returns abbreviated commit hashes in PR metadata and redirects. The
+server resolves them to full hashes through the commit API before comparing them.
+For merged PRs, the redirect may use the merge commit instead of the source head.
+A push between the metadata and redirect requests is refused, and every diff
+request and file page uses the checked full commit pair. Continuations are bound
+to that actual comparison, including its mode, so a merge that changes the diff
+also requires starting again.
+
 These sizes keep a result of ordinary code and paths under the 25,000 tokens
 Claude Code allows a tool result by default; very long paths or content dense
 in tokens may still go over (`MAX_MCP_OUTPUT_TOKENS` raises the limit).
@@ -228,6 +331,8 @@ Bitbucket gives up on the file list or the diff of a very large pull request;
 the result then says why in `files_error` or `diff_error` and still holds the
 rest, and fewer `paths` ask for a smaller diff. A call without `paths` costs
 at least four API requests, a later page of files or a part of a diff three.
+Abbreviated hashes usually add two commit lookups; each repository/revision pair
+is resolved once per call.
 
 ### Status subscriptions
 
@@ -261,9 +366,24 @@ token is created. What the user enters goes from the browser straight to this
 server, which uses it and does not return it. Spaces around each value are
 removed.
 
-The page closes as soon as the values arrive, when the user declines, or after
-10 minutes; at most 3 pages are open at a time. The MCP client must support URL
-elicitation (MCP 2025-11-25 or later).
+The page belongs to the tab that opens it first: the server sends that tab on
+to the page under a key only it learns, so opening the link again, in another
+tab or browser, shows no form and cannot submit one. Use the tab that opened;
+if the page says it was opened elsewhere and that was not you, decline the
+request in the MCP client: a local process that read the URL, from the
+browser's command line for one, got there first. After the values arrive the
+page only shows that they did, so reloading it sends nothing again.
+
+The page stops taking values as soon as they arrive, when the user declines,
+when the call ends, or after 10 minutes; a tab left open says so on reload,
+and the form reloads by itself when the 10 minutes are up. At most 3 pages
+take values at a time. Its port stays bound until a minute after those 10
+minutes, even when the page closes sooner, so a tab left open reaches this
+server, which refuses the values, and not another local process that took
+over a released port. At most 32 listeners, including those retained for closed
+pages, can exist at once; reaching that limit refuses new pages until a listener
+retires. The MCP client must support URL elicitation (MCP
+2025-11-25 or later).
 
 ### Rate limit
 

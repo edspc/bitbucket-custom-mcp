@@ -20,17 +20,15 @@ func twoSteps(f *fakeBitbucket) *bitbucket.Pipeline {
 	)
 }
 
-func ptr[T any](v T) *T { return &v }
-
 func TestWatchPipelineUntilCompleted(t *testing.T) {
 	f := newFake()
 	p := twoSteps(f)
 	f.onPipelineGet = func(n int) {
 		switch n {
 		case 2:
-			f.setState(p, running(), ptr(completed("SUCCESSFUL")), &bitbucket.State{Name: "IN_PROGRESS"})
+			f.setState(p, running(), new(completed("SUCCESSFUL")), &bitbucket.State{Name: "IN_PROGRESS"})
 		case 4:
-			f.setState(p, completed("FAILED"), nil, ptr(completed("FAILED")))
+			f.setState(p, completed("FAILED"), nil, new(completed("FAILED")))
 		}
 	}
 	var mu sync.Mutex
@@ -57,7 +55,7 @@ func TestWatchPipelineUntilCompleted(t *testing.T) {
 		_, text, _ := strings.Cut(u, " ") // drop the time
 		updates = append(updates, text)
 	}
-	want := []string{"step Build: COMPLETED/SUCCESSFUL", "step Test: IN_PROGRESS", "step Test: COMPLETED/FAILED", "pipeline #1: COMPLETED/FAILED"}
+	want := []string{`step "Build": COMPLETED/SUCCESSFUL`, `step "Test": IN_PROGRESS`, `step "Test": COMPLETED/FAILED`, "pipeline #1: COMPLETED/FAILED"}
 	if strings.Join(updates, "|") != strings.Join(want, "|") {
 		t.Fatalf("updates = %q", got.Updates)
 	}
@@ -69,7 +67,7 @@ func TestWatchPipelineUntilCompleted(t *testing.T) {
 	})
 	mu.Lock()
 	defer mu.Unlock()
-	if progress[0] != "pipeline #1: IN_PROGRESS/RUNNING; step 1 of 2, Build: IN_PROGRESS" || progress[3] != "pipeline #1: COMPLETED/FAILED" {
+	if progress[0] != "pipeline #1: IN_PROGRESS/RUNNING; step 1 of 2, \"Build\": IN_PROGRESS" || progress[3] != "pipeline #1: COMPLETED/FAILED" {
 		t.Fatalf("progress = %q", progress)
 	}
 }

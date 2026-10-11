@@ -116,7 +116,7 @@ func TestPipelineSSHPublicKeyMissing(t *testing.T) {
 	}
 }
 
-func TestCheckAccessToken(t *testing.T) {
+func TestCheckTokenAccess(t *testing.T) {
 	for _, tc := range []struct {
 		permissions []string
 		path        string
@@ -137,7 +137,7 @@ func TestCheckAccessToken(t *testing.T) {
 					}
 					w.WriteHeader(status)
 				})
-				err := c.CheckAccessToken(context.Background(), "repo-a", "repo-token", tc.permissions)
+				err := c.CheckTokenAccess(context.Background(), "repo-a", "repo-token", tc.permissions)
 				if (err != nil) != (status != http.StatusOK) {
 					t.Fatalf("err = %v", err)
 				}

@@ -46,6 +46,9 @@ type fakeBitbucket struct {
 	listQueries       []string                            // queries of the pipeline list requests
 	logRanges         []string                            // Range headers of the log requests
 	logStorage        bool                                // logs are redirected to long-term storage
+	refCommit         string                              // head returned by the ref endpoint
+	commits           map[string]string                   // full commits by workspace/repo:revision
+	offRefCommits     map[string]bool                     // commits that are on another branch than the ref
 	pipelineGet       int                                 // GETs of single pipelines so far
 	pipelineGetStatus int                                 // a failure GETs of single pipelines answer with
 	pipelineGetHeader http.Header                         // headers that go with the failure
@@ -58,6 +61,7 @@ type fakeBitbucket struct {
 	prListQueries     []string                            // queries of the pull request list requests
 	diffStatus        int                                 // a failure the diff answers with
 	diffstatStatus    int                                 // a failure the diffstat answers with
+	mergeDiff         bool                                // merged PR redirects use the merge commit
 	// onPipelineGet runs, with the lock held, before the n-th GET of a single pipeline is
 	// answered, so a test can move a pipeline along while it is watched.
 	onPipelineGet func(n int)
@@ -73,27 +77,47 @@ type fakeChange struct {
 // stubPages stands in for the local secret page server, so tests open no sockets.
 type stubPages struct {
 	mu      sync.Mutex
-	handler http.Handler
-	stops   int
+	handler http.Handler   // the page served last
+	pages   []http.Handler // every page served
+	tab     url.Values     // the query the page sent the user's tab on with, which it keeps
+	opened  string         // the page as the user last saw it before submitting
 }
 
 const stubPagesHost = "127.0.0.1:4242"
 
-func (s *stubPages) serve(h http.Handler) (string, func(), error) {
+func (s *stubPages) serve(h http.Handler, _ time.Time) (string, <-chan struct{}, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.handler = h
-	return "http://" + stubPagesHost, func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		s.stops++
-	}, nil
+	s.pages = append(s.pages, h)
+	// No actual socket survives this stub. Tests of retained listeners supply an open channel.
+	closed := make(chan struct{})
+	close(closed)
+	return "http://" + stubPagesHost, closed, nil
 }
 
+// openedPage is the page the user last submitted, as it showed before the submission.
+func (s *stubPages) openedPage() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.opened
+}
+
+// stopCount is how many of the pages served were closed: they take no values any more.
 func (s *stubPages) stopCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.stops
+	n := 0
+	for _, h := range s.pages {
+		if p, ok := h.(*secretPage); ok {
+			p.mu.Lock()
+			if p.closed {
+				n++
+			}
+			p.mu.Unlock()
+		}
+	}
+	return n
 }
 
 func (s *stubPages) served() bool {
@@ -104,24 +128,64 @@ func (s *stubPages) served() bool {
 
 // do sends a request to the secret page as if it arrived on the page's loopback address; the
 // Host header comes from the request URL unless the test changes it.
+// The stub is the user's one browser tab: once the page has sent it on to its own URL, it keeps
+// using that URL, and like a browser it follows the redirects of a GET.
 func (s *stubPages) do(r *http.Request) *httptest.ResponseRecorder {
 	s.mu.Lock()
 	h := s.handler
+	if s.tab != nil && r.URL.RawQuery == "" {
+		r.URL.RawQuery = s.tab.Encode()
+	}
 	s.mu.Unlock()
 	r = r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4242}))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
-	return rec
+	if rec.Code != http.StatusSeeOther {
+		return rec
+	}
+	next, err := r.URL.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		panic(err)
+	}
+	if next.Query().Has(tabParam) {
+		s.mu.Lock()
+		s.tab = next.Query()
+		s.mu.Unlock()
+	}
+	if r.Method != http.MethodGet {
+		return rec
+	}
+	return s.do(httptest.NewRequest(http.MethodGet, next.String(), nil))
 }
 
+// submit opens the page and posts the values with the approval, as the user does.
 func (s *stubPages) submit(pageURL string, values url.Values) int {
+	body := s.do(httptestGet(pageURL)).Body.String()
+	s.mu.Lock()
+	s.opened = body
+	s.mu.Unlock()
+	values = maps.Clone(values)
+	if values == nil {
+		values = url.Values{}
+	}
+	values.Set("approval.action", "confirm")
 	r := postForm(pageURL, values.Encode())
 	r.Header.Set("Origin", "http://"+stubPagesHost) // what a browser sends with Referrer-Policy: same-origin
 	return s.do(r).Code
 }
 
+const testPipelineCommit = "0123456789012345678901234567890123456789"
+
+func connectApproving(t *testing.T, f *fakeBitbucket) *mcp.ClientSession {
+	t.Helper()
+	u := &fakeUser{pages: f.pages, action: "accept", values: url.Values{}}
+	return connect(t, f, u.elicit)
+}
+
 func newFake() *fakeBitbucket {
 	return &fakeBitbucket{
+		refCommit:  testPipelineCommit,
+		commits:    map[string]string{},
 		pipelines:  map[string]bool{"repo-a": true, "repo-b": true},
 		sshKeys:    map[string]string{"repo-a": "ssh-rsa KEYA"},
 		deployKeys: map[string][]bitbucket.DeployKey{},
@@ -152,7 +216,7 @@ func (f *fakeBitbucket) addRun(repo string, state bitbucket.State, steps ...bitb
 func (f *fakeBitbucket) addRunLocked(repo string, state bitbucket.State, target bitbucket.PipelineTarget, steps []bitbucket.Step) *bitbucket.Pipeline {
 	f.nextID++
 	p := &bitbucket.Pipeline{
-		UUID: fmt.Sprintf("{pipe-%d}", f.nextID), BuildNumber: len(f.runs[repo]) + 1, State: state, Target: target,
+		UUID: fmt.Sprintf("{00000000-0000-4000-8000-%012d}", f.nextID), BuildNumber: len(f.runs[repo]) + 1, State: state, Target: target,
 		CreatedOn: fmt.Sprintf("2026-10-10T10:%02d:00Z", len(f.runs[repo])),
 	}
 	f.runs[repo] = append(f.runs[repo], p)
@@ -205,6 +269,28 @@ func (f *fakeBitbucket) handler(t *testing.T) http.Handler {
 			}
 		})
 	}
+	for _, collection := range []string{"branches", "tags"} {
+		mux.HandleFunc("GET "+repo+"/refs/"+collection+"/{ref}", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, map[string]any{"target": bitbucket.Commit{Hash: f.refCommit}})
+		})
+	}
+	mux.HandleFunc("GET "+repo+"/commits", func(w http.ResponseWriter, r *http.Request) {
+		// The commits reachable from include but not from exclude, the ref's head.
+		var values []bitbucket.Commit
+		if include := r.URL.Query().Get("include"); f.offRefCommits[include] {
+			values = append(values, bitbucket.Commit{Hash: include})
+		}
+		page(w, values)
+	})
+	mux.HandleFunc("GET /2.0/repositories/{workspace}/{repo}/commit/{commit}", func(w http.ResponseWriter, r *http.Request) {
+		hash := r.PathValue("commit")
+		if full, ok := f.commits[r.PathValue("workspace")+"/"+r.PathValue("repo")+":"+hash]; ok {
+			hash = full
+		} else if len(hash) < 40 {
+			hash += strings.Repeat("0", 40-len(hash))
+		}
+		writeJSON(w, bitbucket.Commit{Hash: hash})
+	})
 	mux.HandleFunc("GET "+repo+"/pipelines_config", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]bool{"enabled": f.pipelines[r.PathValue("repo")]})
 	})
@@ -355,14 +441,20 @@ func (f *fakeBitbucket) handler(t *testing.T) http.Handler {
 	})
 	mux.HandleFunc("GET "+repo+"/pullrequests/{id}/statuses", func(w http.ResponseWriter, r *http.Request) {
 		f.prRequests = append(f.prRequests, "statuses")
-		page(w, f.prStatuses[prKey(r)])
+		writeCollectionPage(w, r, f.prStatuses[prKey(r)])
 	})
 	// Like Bitbucket, a pull request redirects to the diff and the diffstat of its commits.
 	for _, kind := range []string{"diff", "diffstat"} {
 		mux.HandleFunc("GET "+repo+"/pullrequests/{id}/"+kind, func(w http.ResponseWriter, r *http.Request) {
 			f.prRequests = append(f.prRequests, kind+" redirect")
-			w.Header().Set("Location", fmt.Sprintf("%s/repositories/ws/%[2]s/%[3]s/ws/%[2]s:src%%0Ddst?from_pullrequest_id=%[4]s&topic=true",
-				bitbucket.APIURL, r.PathValue("repo"), kind, r.PathValue("id")))
+			pr := f.pullRequests[prKey(r)]
+			sourceRepo, sourceHash := pr.Source.Repository.FullName, pr.Source.Commit.Hash
+			if f.mergeDiff && pr.State == "MERGED" && pr.MergeCommit != nil {
+				sourceRepo, sourceHash = "ws/"+r.PathValue("repo"), pr.MergeCommit.Hash
+			}
+			w.Header().Set("Location", fmt.Sprintf("%s/repositories/ws/%[2]s/%[3]s/%[5]s:%[6]s%%0D%[7]s?from_pullrequest_id=%[4]s&topic=true",
+				bitbucket.APIURL, r.PathValue("repo"), kind, r.PathValue("id"),
+				sourceRepo, sourceHash, pr.Destination.Commit.Hash))
 			w.WriteHeader(http.StatusFound)
 		})
 	}
@@ -393,7 +485,7 @@ func (f *fakeBitbucket) handler(t *testing.T) http.Handler {
 		for _, c := range changes(r) {
 			stats = append(stats, c.stat)
 		}
-		page(w, stats)
+		writeCollectionPage(w, r, stats)
 	})
 
 	mux.HandleFunc("POST "+repo+"/pipelines/{$}", func(w http.ResponseWriter, r *http.Request) {
@@ -530,6 +622,28 @@ func (t handlerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeCollectionPage mirrors Bitbucket's page/size metadata, including offsets past the end.
+func writeCollectionPage[T any](w http.ResponseWriter, r *http.Request, values []T) {
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("pagelen"))
+	if limit <= 0 {
+		limit = 100
+	}
+	n, _ := strconv.Atoi(q.Get("page"))
+	n = max(n, 1)
+	start := len(values)
+	if n-1 <= len(values)/limit {
+		start = min((n-1)*limit, len(values))
+	}
+	end := start + min(limit, len(values)-start)
+	page := map[string]any{"values": values[start:end], "size": len(values)}
+	if end < len(values) {
+		q.Set("page", strconv.Itoa(n+1))
+		page["next"] = bitbucket.APIURL + r.URL.EscapedPath()[len("/2.0"):] + "?" + q.Encode()
+	}
+	writeJSON(w, page)
 }
 
 func decode(t *testing.T, r *http.Request, v any) {

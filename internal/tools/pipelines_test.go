@@ -17,7 +17,7 @@ func (f *fakeBitbucket) runBodyList() []string {
 
 func TestRunPipelineOnBranch(t *testing.T) {
 	f := newFake()
-	out, isErr := call(t, connect(t, f, nil), "run_pipeline", map[string]any{"repo": "repo-a", "branch": "main"})
+	out, isErr := call(t, connectApproving(t, f), "run_pipeline", map[string]any{"repo": "repo-a", "branch": "main"})
 	if isErr {
 		t.Fatalf("result = %s", out)
 	}
@@ -27,7 +27,7 @@ func TestRunPipelineOnBranch(t *testing.T) {
 		p.URL != "https://bitbucket.org/ws/repo-a/pipelines/results/1" || p.ResourceURI != "bitbucket://pipelines/repo-a/1" {
 		t.Fatalf("result = %+v %+v", res, p)
 	}
-	want := `{"target":{"type":"pipeline_ref_target","ref_type":"branch","ref_name":"main"}}`
+	want := `{"target":{"type":"pipeline_ref_target","ref_type":"branch","ref_name":"main","commit":{"type":"commit","hash":"` + testPipelineCommit + `"}}}`
 	if got := f.runBodyList(); len(got) != 1 || got[0] != want {
 		t.Fatalf("run requests = %v", got)
 	}
@@ -35,14 +35,14 @@ func TestRunPipelineOnBranch(t *testing.T) {
 
 func TestRunCustomPipelineOnTagWithVariables(t *testing.T) {
 	f := newFake()
-	out, isErr := call(t, connect(t, f, nil), "run_pipeline", map[string]any{
+	out, isErr := call(t, connectApproving(t, f), "run_pipeline", map[string]any{
 		"repo": "repo-a", "tag": "v1.2.0", "commit": "abc123", "custom": "deploy",
 		"variables": []map[string]string{{"name": "ENV", "value": "prod"}},
 	})
 	if isErr || !strings.Contains(out, `"definition":"custom: deploy"`) {
 		t.Fatalf("result = %s (error %v)", out, isErr)
 	}
-	want := `{"target":{"type":"pipeline_ref_target","ref_type":"tag","ref_name":"v1.2.0","commit":{"type":"commit","hash":"abc123"},` +
+	want := `{"target":{"type":"pipeline_ref_target","ref_type":"tag","ref_name":"v1.2.0","commit":{"type":"commit","hash":"abc1230000000000000000000000000000000000"},` +
 		`"selector":{"type":"custom","pattern":"deploy"}},"variables":[{"key":"ENV","value":"prod","secured":false}]}`
 	if got := f.runBodyList(); len(got) != 1 || got[0] != want {
 		t.Fatalf("run requests = %v\nwant %s", got, want)
@@ -69,8 +69,8 @@ func TestRunCustomPipelineWithSecretVariables(t *testing.T) {
 	if len(asked) != 1 {
 		t.Fatalf("elicitation requests = %+v", asked)
 	}
-	body := f.pages.do(httptestGet(asked[0].URL)).Body.String()
-	for _, wantText := range []string{"run_pipeline", `name="DEPLOY_TOKEN"`, `name="DB_PASS"`, "the custom pipeline &#34;deploy&#34; of repo-a on branch main"} {
+	body := f.pages.openedPage()
+	for _, wantText := range []string{"run_pipeline", `name="DEPLOY_TOKEN"`, `name="DB_PASS"`, "the custom pipeline &#34;deploy&#34; of &#34;repo-a&#34; on branch &#34;main&#34;"} {
 		if !strings.Contains(body, wantText) {
 			t.Errorf("page does not contain %q", wantText)
 		}
@@ -166,7 +166,8 @@ func TestGetPipelineWithSteps(t *testing.T) {
 	p.CompletedOn = "2026-10-10T10:05:00Z"
 	p.Target.Commit = &bitbucket.Commit{Type: "commit", Hash: "abc123"}
 	cs := connect(t, f, nil)
-	for _, id := range []string{"1", p.UUID} {
+	// A UUID copied without its braces reaches the pipeline too; Bitbucket refuses it bare.
+	for _, id := range []string{"1", p.UUID, strings.Trim(p.UUID, "{}")} {
 		v := decodeResult[pipelineView](t, mustCall(t, cs, "get_pipeline", map[string]any{"repo": "repo-a", "pipeline": id}))
 		if v.BuildNumber != 1 || !v.Finished || v.State != "COMPLETED/ERROR" || v.Error != "Container 'docker' exceeded memory limit." || len(v.Steps) != 2 ||
 			v.Steps[1].State != "COMPLETED/ERROR" || v.Steps[1].Error != "Container 'docker' exceeded memory limit." {
@@ -218,5 +219,21 @@ func TestToolsRefuseMissingFields(t *testing.T) {
 				t.Fatalf("mutations = %v", m)
 			}
 		})
+	}
+}
+
+// Anything but a build number or a UUID never reaches Bitbucket, which would resolve a dot
+// segment to another resource.
+func TestPipelineRefMustBeNumberOrUUID(t *testing.T) {
+	f := newFake()
+	f.addRun("repo-a", running())
+	cs := connect(t, f, nil)
+	for _, id := range []string{"..", ".", "{}", "1/steps", "main"} {
+		if out, isErr := call(t, cs, "get_pipeline", map[string]any{"repo": "repo-a", "pipeline": id}); !isErr || !strings.Contains(out, "build number") {
+			t.Errorf("pipeline %q = %s (error %v)", id, out, isErr)
+		}
+	}
+	if f.pipelineGet != 0 {
+		t.Fatalf("%d requests reached Bitbucket", f.pipelineGet)
 	}
 }

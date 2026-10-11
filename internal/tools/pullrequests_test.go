@@ -13,16 +13,19 @@ import (
 )
 
 const (
-	loginDiff  = "diff --git a/app/login.go b/app/login.go\n--- a/app/login.go\n+++ b/app/login.go\n@@ -1 +1,2 @@\n-old\n+new\n+more\n"
-	renameDiff = "diff --git a/docs/old.md b/docs/new.md\nsimilarity index 90%\nrename from docs/old.md\nrename to docs/new.md\n"
-	removeDiff = "diff --git a/legacy.txt b/legacy.txt\ndeleted file mode 100644\n"
+	testPRSource      = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	testPRDestination = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	testPRMerge       = "cccccccccccccccccccccccccccccccccccccccc"
+	loginDiff         = "diff --git a/app/login.go b/app/login.go\n--- a/app/login.go\n+++ b/app/login.go\n@@ -1 +1,2 @@\n-old\n+new\n+more\n"
+	renameDiff        = "diff --git a/docs/old.md b/docs/new.md\nsimilarity index 90%\nrename from docs/old.md\nrename to docs/new.md\n"
+	removeDiff        = "diff --git a/legacy.txt b/legacy.txt\ndeleted file mode 100644\n"
 )
 
 // addPullRequest adds pull request 7 of repo-a: from a fork, merged, with three changed files.
 func addPullRequest(f *fakeBitbucket) {
 	pr := &bitbucket.PullRequest{
 		ID: 7, Title: "Add login", State: "MERGED", Author: bitbucket.Account{DisplayName: "Ann"}, CloseSourceBranch: true,
-		MergeCommit: &bitbucket.Commit{Hash: "ccc333"}, ClosedBy: &bitbucket.Account{DisplayName: "Bob"},
+		MergeCommit: &bitbucket.Commit{Hash: testPRMerge}, ClosedBy: &bitbucket.Account{DisplayName: "Bob"},
 		CreatedOn: "2026-10-01T10:00:00Z", UpdatedOn: "2026-10-02T10:00:00Z", CommentCount: 4, TaskCount: 1,
 		Participants: []bitbucket.Participant{
 			{User: bitbucket.Account{DisplayName: "Bob"}, Role: "REVIEWER", Approved: true, State: "approved"},
@@ -33,8 +36,8 @@ func addPullRequest(f *fakeBitbucket) {
 		},
 	}
 	pr.Summary.Raw = "Adds the *login* page."
-	pr.Source.Branch.Name, pr.Source.Commit, pr.Source.Repository.FullName = "feature/login", &bitbucket.Commit{Hash: "aaa111"}, "dev/repo-a-fork"
-	pr.Destination.Branch.Name, pr.Destination.Commit, pr.Destination.Repository.FullName = "main", &bitbucket.Commit{Hash: "bbb222"}, "ws/repo-a"
+	pr.Source.Branch.Name, pr.Source.Commit, pr.Source.Repository.FullName = "feature/login", &bitbucket.Commit{Hash: testPRSource}, "dev/repo-a-fork"
+	pr.Destination.Branch.Name, pr.Destination.Commit, pr.Destination.Repository.FullName = "main", &bitbucket.Commit{Hash: testPRDestination}, "ws/repo-a"
 	f.pullRequests["repo-a/7"] = pr
 	f.prStatuses["repo-a/7"] = []bitbucket.CommitStatus{
 		{Name: "Pipeline #12 for feature/login", State: "SUCCESSFUL", URL: "https://bitbucket.org/ws/repo-a/pipelines/results/12"},
@@ -51,9 +54,10 @@ func addPullRequest(f *fakeBitbucket) {
 // loginSummary is how pull request 7 of addPullRequest is shown.
 func loginSummary() pullRequestSummary {
 	return pullRequestSummary{
-		ID: 7, Title: "Add login", State: "MERGED", Author: "Ann",
-		Source:      pullRequestEndView{Branch: "feature/login", Commit: "aaa111", Repository: "dev/repo-a-fork"},
-		Destination: pullRequestEndView{Branch: "main", Commit: "bbb222", Repository: "ws/repo-a"},
+		ContentTrust: "untrusted",
+		ID:           7, Title: "Add login", State: "MERGED", Author: "Ann",
+		Source:      pullRequestEndView{Branch: "feature/login", Commit: testPRSource, Repository: "dev/repo-a-fork"},
+		Destination: pullRequestEndView{Branch: "main", Commit: testPRDestination, Repository: "ws/repo-a"},
 		CreatedOn:   "2026-10-01T10:00:00Z", UpdatedOn: "2026-10-02T10:00:00Z", CommentCount: 4, OpenTasks: 1,
 		URL: "https://bitbucket.org/ws/repo-a/pull-requests/7",
 	}
@@ -82,7 +86,7 @@ func TestGetPullRequest(t *testing.T) {
 	want := pullRequestView{
 		pullRequestSummary: loginSummary(),
 		Description:        "Adds the *login* page.",
-		CloseSourceBranch:  true, MergeCommit: "ccc333", ClosedBy: "Bob",
+		CloseSourceBranch:  true, MergeCommit: testPRMerge, ClosedBy: "Bob",
 		Reviewers: []reviewerView{
 			{Name: "Bob", Role: "reviewer", State: "approved"},
 			{Name: "Cid", Role: "reviewer", State: "changes_requested"},
@@ -117,8 +121,8 @@ func TestGetPullRequestDiffOfSomeFiles(t *testing.T) {
 	})
 	want := pullRequestView{
 		pullRequestSummary: loginSummary(),
-		CloseSourceBranch:  true, MergeCommit: "ccc333", ClosedBy: "Bob",
-		Diff: ptr(renameDiff + removeDiff),
+		CloseSourceBranch:  true, MergeCommit: testPRMerge, ClosedBy: "Bob",
+		Diff: new(renameDiff + removeDiff),
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("pull request =\n%+v\nwant\n%+v", got, want)
@@ -214,7 +218,7 @@ func TestGetPullRequestRefusesPartOfAnotherDiff(t *testing.T) {
 	}
 	// A push to the source branch makes another diff.
 	f.mu.Lock()
-	f.pullRequests["repo-a/7"].Source.Commit = &bitbucket.Commit{Hash: "ddd444"}
+	f.pullRequests["repo-a/7"].Source.Commit = &bitbucket.Commit{Hash: strings.Repeat("d", 40)}
 	f.mu.Unlock()
 	out, isErr := call(t, cs, "get_pull_request", map[string]any{"repo": "repo-a", "pull_request": 7, "paths": big, "diff_from": first.DiffNext})
 	if !isErr || !strings.Contains(out, "has changed") {
@@ -249,7 +253,7 @@ func TestGetPullRequestListsFilesInPages(t *testing.T) {
 		want := []string{"pull request", "diffstat redirect", "diffstat"}
 		described := got.Description != "" && got.Reviewers != nil && got.Builds != nil
 		if page == 1 {
-			want = []string{"pull request", "statuses", "diffstat redirect", "diffstat"}
+			want = []string{"pull request", "statuses", "diffstat redirect", "diffstat", "diffstat"}
 		}
 		if described != (page == 1) || got.FilesTotal != len(all) || len(got.Files) > maxFiles || !slices.Equal(requests, want) {
 			t.Fatalf("page %d, requested %q: %d files of %d, described %v", page, requests, len(got.Files), got.FilesTotal, described)
@@ -307,7 +311,7 @@ func TestGetPullRequestRefusesPageOfAnotherList(t *testing.T) {
 	}
 	// A push to the destination branch makes another list.
 	f.mu.Lock()
-	f.pullRequests["repo-a/7"].Destination.Commit = &bitbucket.Commit{Hash: "eee555"}
+	f.pullRequests["repo-a/7"].Destination.Commit = &bitbucket.Commit{Hash: strings.Repeat("e", 40)}
 	f.mu.Unlock()
 	out, isErr := call(t, cs, "get_pull_request", map[string]any{"repo": "repo-a", "pull_request": 7, "files_from": first.FilesNext})
 	if !isErr || !strings.Contains(out, "has changed") {
@@ -401,5 +405,19 @@ func TestGetPullRequestResultSize(t *testing.T) {
 		if len(out) > 25_000*5/2 {
 			t.Errorf("%s take %d bytes", name, len(out))
 		}
+	}
+}
+
+// Anyone who can push may report build results, so only the first ones are shown, with a count.
+func TestGetPullRequestBoundsBuilds(t *testing.T) {
+	f := newFake()
+	addPullRequest(f)
+	f.prStatuses["repo-a/7"] = nil
+	for i := range maxBuilds + 7 {
+		f.prStatuses["repo-a/7"] = append(f.prStatuses["repo-a/7"], bitbucket.CommitStatus{Name: fmt.Sprint("build ", i), State: "SUCCESSFUL"})
+	}
+	got := decodeResult[pullRequestView](t, mustCall(t, connect(t, f, nil), "get_pull_request", map[string]any{"repo": "repo-a", "pull_request": 7}))
+	if len(got.Builds) != maxBuilds || got.BuildsTotal != maxBuilds+7 || !got.BuildsTruncated || got.Builds[0].Name != "build 0" {
+		t.Fatalf("%d builds of %d", len(got.Builds), got.BuildsTotal)
 	}
 }

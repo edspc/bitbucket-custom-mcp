@@ -11,7 +11,21 @@ import (
 	"testing"
 )
 
-const diffLocation = "https://api.bitbucket.org/2.0/repositories/ws/repo-a/diff/ws/repo-a:aaa%0Dbbb?from_pullrequest_id=7&topic=true"
+const diffLocation = "https://api.bitbucket.org/2.0/repositories/ws/repo-a/diff/ws/repo-a:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa%0Dbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb?from_pullrequest_id=7&topic=true"
+
+func diffPullRequest() PullRequest {
+	return PullRequest{ID: 7, Source: PullRequestEnd{Commit: &Commit{Hash: strings.Repeat("a", 40)}},
+		Destination: PullRequestEnd{Commit: &Commit{Hash: strings.Repeat("b", 40)}}}
+}
+
+func testDiffSnapshot(t *testing.T, c *Client, kind string) DiffSnapshot {
+	t.Helper()
+	snapshot, err := c.ResolvePullRequestDiff(t.Context(), "repo-a", diffPullRequest(), kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
 
 func TestGetPullRequest(t *testing.T) {
 	c := newTestClient(func(w http.ResponseWriter, r *http.Request) {
@@ -54,19 +68,20 @@ func TestPullRequestDiff(t *testing.T) {
 		}
 		_, _ = io.WriteString(w, diff)
 	})
-	got, truncated, err := c.PullRequestDiff(context.Background(), "repo-a", 7, []string{"a.go", "dir/b c.go"}, 0, 100)
+	snapshot := testDiffSnapshot(t, c, "diff")
+	got, truncated, err := c.PullRequestDiff(context.Background(), snapshot, []string{"a.go", "dir/b c.go"}, 0, 100)
 	if err != nil || string(got) != diff || truncated {
 		t.Fatalf("PullRequestDiff = %q, %v, %v", got, truncated, err)
 	}
 	want := []string{
 		"api.bitbucket.org/2.0/repositories/ws/repo-a/pullrequests/7/diff?",
-		"api.bitbucket.org/2.0/repositories/ws/repo-a/diff/ws/repo-a:aaa%0Dbbb?from_pullrequest_id=7&path=a.go&path=dir%2Fb+c.go&topic=true",
+		"api.bitbucket.org/2.0/repositories/ws/repo-a/diff/ws/repo-a:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa%0Dbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb?from_pullrequest_id=7&path=a.go&path=dir%2Fb+c.go&topic=true",
 	}
 	if !reflect.DeepEqual(requests, want) {
 		t.Fatalf("requests = %q", requests)
 	}
 
-	got, truncated, err = c.PullRequestDiff(context.Background(), "repo-a", 7, nil, 0, 10)
+	got, truncated, err = c.PullRequestDiff(context.Background(), snapshot, nil, 0, 10)
 	if err != nil || string(got) != diff[:10] || !truncated {
 		t.Fatalf("cut diff = %q, %v, %v", got, truncated, err)
 	}
@@ -74,7 +89,7 @@ func TestPullRequestDiff(t *testing.T) {
 		t.Fatalf("diff without paths requested as %s", last)
 	}
 	for offset, want := range map[int]string{10: diff[10:20], 25: diff[25:], len(diff) + 5: ""} {
-		got, truncated, err = c.PullRequestDiff(context.Background(), "repo-a", 7, nil, offset, 10)
+		got, truncated, err = c.PullRequestDiff(context.Background(), snapshot, nil, offset, 10)
 		if err != nil || string(got) != want || truncated != (offset == 10) {
 			t.Fatalf("diff from %d = %q, %v, %v; want %q", offset, got, truncated, err, want)
 		}
@@ -109,7 +124,10 @@ func TestPullRequestDiffRefusesOtherAnswers(t *testing.T) {
 				}
 				w.WriteHeader(http.StatusNotFound)
 			})
-			_, _, err := c.PullRequestDiff(context.Background(), "repo-a", 7, nil, 0, 100)
+			snapshot, err := c.ResolvePullRequestDiff(t.Context(), "repo-a", diffPullRequest(), "diff")
+			if err == nil {
+				_, _, err = c.PullRequestDiff(t.Context(), snapshot, nil, 0, 100)
+			}
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
 			}
@@ -126,18 +144,18 @@ func TestPullRequestDiffStatFollowsPages(t *testing.T) {
 		case r.URL.Path == "/2.0/repositories/ws/repo-a/pullrequests/7/diffstat":
 			w.Header().Set("Location", strings.Replace(diffLocation, "/diff/", "/diffstat/", 1))
 			w.WriteHeader(http.StatusFound)
-		case r.URL.Query().Get("page") == "":
+		case r.URL.Query().Get("page") == "1":
 			_, _ = fmt.Fprintf(w, `{"values": [{"status": "added", "lines_added": 3, "new": {"path": "a.go"}}], "next": %q}`, strings.Replace(diffLocation, "/diff/", "/diffstat/", 1)+"&page=2")
 		default:
 			_, _ = io.WriteString(w, `{"values": [{"status": "removed", "lines_removed": 1, "old": {"path": "b.go"}}]}`)
 		}
 	})
-	got, err := c.PullRequestDiffStat(context.Background(), "repo-a", 7)
+	got, err := c.PullRequestDiffStat(context.Background(), testDiffSnapshot(t, c, "diffstat"), 0, 200)
 	want := []DiffStat{
 		{Status: "added", LinesAdded: 3, New: &CommitFile{Path: "a.go"}},
 		{Status: "removed", LinesRemoved: 1, Old: &CommitFile{Path: "b.go"}},
 	}
-	if err != nil || !reflect.DeepEqual(got, want) {
+	if err != nil || !reflect.DeepEqual(got.Values, want) || got.More {
 		t.Fatalf("PullRequestDiffStat = %+v, %v", got, err)
 	}
 }

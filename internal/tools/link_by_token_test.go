@@ -108,15 +108,29 @@ func TestLinkByTokenPageShowsInstructions(t *testing.T) {
 	if len(asked) != 1 {
 		t.Fatalf("elicitation requests = %+v", asked)
 	}
-	r := httptestGet(asked[0].URL)
-	body := f.pages.do(r).Body.String()
+	body := f.pages.openedPage()
 	for _, want := range []string{
 		`href="https://bitbucket.org/ws/repo-a/admin/access-tokens"`, `<span class="chip">repository</span><span class="chip">pipeline</span>`,
 		"repo-b-pipelines", "REPO_A_TOKEN", "link_repos_by_token", "Create a repository access token in repo-a",
+		"checks read access only", "cannot verify the token type, repository-only scope or selected permissions",
+		"Do not paste a workspace, project or user token",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page does not mention %q", want)
 		}
+	}
+}
+
+func TestLinkByTokenReportsReadAccessOnly(t *testing.T) {
+	f := newFake()
+	u := &fakeUser{pages: f.pages, action: "accept", token: f.validToken}
+	args := tokenArgs("repository", "", false)
+	args["permissions"] = []string{"repository:write"}
+	out := mustCall(t, connect(t, f, u.elicit), "link_repos_by_token", args)
+	got := decodeResult[linkByTokenResult](t, out)
+	if got.TokenValidation != "read_access_only" || !strings.Contains(got.Message, "permissions were not verified") ||
+		strings.Contains(out, f.validToken) {
+		t.Fatalf("token validation was misrepresented: %s", out)
 	}
 }
 
@@ -163,7 +177,7 @@ func TestLinkByTokenUnknownEnvironment(t *testing.T) {
 	f := newFake()
 	u := &fakeUser{pages: f.pages, action: "accept", token: "repo-a-token"}
 	out, isErr := call(t, connect(t, f, u.elicit), "link_repos_by_token", tokenArgs("deployment", "Staging", false))
-	if !isErr || !strings.Contains(out, "available: Production, Test") {
+	if !isErr || !strings.Contains(out, `available: "Production", "Test"`) {
 		t.Fatalf("result = %s (error %v)", out, isErr)
 	}
 	if len(u.asked()) != 0 {

@@ -12,9 +12,9 @@ func (c *Client) AccessTokensPage(repo string) string {
 	return c.repoWebURL(repo, "admin", "access-tokens")
 }
 
-// CheckAccessToken makes sure token is a working access token of repo: it must read something
-// in repo that its permissions allow. A genuine token of another repository gets 403 there.
-func (c *Client) CheckAccessToken(ctx context.Context, repo, token string, permissions []string) error {
+// CheckTokenAccess probes only read access to repo. The requested permissions choose the
+// endpoint; success does not verify the token type, repository-only scope or actual scopes.
+func (c *Client) CheckTokenAccess(ctx context.Context, repo, token string, permissions []string) error {
 	bearer := func(req *http.Request) { req.Header.Set("Authorization", "Bearer "+token) }
 	return c.send(ctx, http.MethodGet, APIURL+c.tokenProbePath(repo, permissions), bearer, nil, nil)
 }

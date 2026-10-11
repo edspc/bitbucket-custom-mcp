@@ -14,7 +14,7 @@ func keyArgs(force bool) map[string]any {
 
 func TestLinkByKeyAddsKeyLabelledWithSource(t *testing.T) {
 	f := newFake()
-	out, isErr := call(t, connect(t, f, nil), "link_repos_by_key", keyArgs(false))
+	out, isErr := call(t, connectApproving(t, f), "link_repos_by_key", keyArgs(false))
 	if isErr || !strings.Contains(out, `"added"`) {
 		t.Fatalf("result = %s (error %v)", out, isErr)
 	}
@@ -27,7 +27,7 @@ func TestLinkByKeyAddsKeyLabelledWithSource(t *testing.T) {
 func TestLinkByKeyNeedsPipelinesInBoth(t *testing.T) {
 	f := newFake()
 	f.pipelines["repo-b"] = false
-	out, isErr := call(t, connect(t, f, nil), "link_repos_by_key", keyArgs(false))
+	out, isErr := call(t, connectApproving(t, f), "link_repos_by_key", keyArgs(false))
 	if !isErr || !strings.Contains(out, "not enabled in repo-b") {
 		t.Fatalf("result = %s (error %v)", out, isErr)
 	}
@@ -39,7 +39,7 @@ func TestLinkByKeyNeedsPipelinesInBoth(t *testing.T) {
 func TestLinkByKeyWithoutPipelinesSSHKey(t *testing.T) {
 	f := newFake()
 	delete(f.sshKeys, "repo-a")
-	out, isErr := call(t, connect(t, f, nil), "link_repos_by_key", keyArgs(false))
+	out, isErr := call(t, connectApproving(t, f), "link_repos_by_key", keyArgs(false))
 	if !isErr || !strings.Contains(out, "no pipelines SSH key") {
 		t.Fatalf("result = %s (error %v)", out, isErr)
 	}
@@ -48,7 +48,7 @@ func TestLinkByKeyWithoutPipelinesSSHKey(t *testing.T) {
 func TestLinkByKeySameKeyIsNoop(t *testing.T) {
 	f := newFake()
 	f.deployKeys["repo-b"] = []bitbucket.DeployKey{{ID: 1, Key: "ssh-rsa KEYA some-comment", Label: "manual"}}
-	out, isErr := call(t, connect(t, f, nil), "link_repos_by_key", keyArgs(false))
+	out, isErr := call(t, connectApproving(t, f), "link_repos_by_key", keyArgs(false))
 	if isErr || !strings.Contains(out, `"already_linked"`) {
 		t.Fatalf("result = %s (error %v)", out, isErr)
 	}
@@ -60,7 +60,7 @@ func TestLinkByKeySameKeyIsNoop(t *testing.T) {
 func TestLinkByKeyLabelConflict(t *testing.T) {
 	f := newFake()
 	f.deployKeys["repo-b"] = []bitbucket.DeployKey{{ID: 7, Key: "ssh-rsa OLD", Label: "repo-a"}}
-	cs := connect(t, f, nil)
+	cs := connectApproving(t, f)
 
 	out, isErr := call(t, cs, "link_repos_by_key", keyArgs(false))
 	if !isErr || !strings.Contains(out, "force=true") {
@@ -88,7 +88,7 @@ func TestLinkByKeyForceKeepsOldKeyWhenAddFails(t *testing.T) {
 	f.failAddKey = true
 	old := bitbucket.DeployKey{ID: 7, Key: "ssh-rsa OLD", Label: "repo-a"}
 	f.deployKeys["repo-b"] = []bitbucket.DeployKey{old}
-	out, isErr := call(t, connect(t, f, nil), "link_repos_by_key", keyArgs(true))
+	out, isErr := call(t, connectApproving(t, f), "link_repos_by_key", keyArgs(true))
 	if !isErr {
 		t.Fatalf("result = %s, want error", out)
 	}

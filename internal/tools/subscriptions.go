@@ -55,6 +55,9 @@ func (t *tools) lookPipeline(ctx context.Context, uri string) (bitbucket.Pipelin
 	if !ok {
 		return bitbucket.Pipeline{}, pipelineView{}, mcp.ResourceNotFoundError(uri)
 	}
+	if err := t.policy.check("get_pipeline", pipelineRef{Repo: repo, Pipeline: build}); err != nil {
+		return bitbucket.Pipeline{}, pipelineView{}, err
+	}
 	p, view, err := t.pipelineStatus(ctx, repo, build)
 	if bitbucket.IsStatus(err, http.StatusNotFound) {
 		return p, view, mcp.ResourceNotFoundError(uri)

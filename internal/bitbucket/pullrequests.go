@@ -117,30 +117,70 @@ func (c *Client) GetPullRequest(ctx context.Context, repo string, id int) (PullR
 	return pr, err
 }
 
-// PullRequestStatuses lists the build results reported for a pull request.
-func (c *Client) PullRequestStatuses(ctx context.Context, repo string, id int) ([]CommitStatus, error) {
-	return list[CommitStatus](ctx, c, c.pullRequestPath(repo, id, "statuses"))
+// PullRequestStatuses reads only the first page of build results, the newest first: Bitbucket
+// lists the oldest first, and on a busy pull request those are long out of date. A page holds
+// at most 50.
+func (c *Client) PullRequestStatuses(ctx context.Context, repo string, id, limit int) (Page[CommitStatus], error) {
+	q := url.Values{"pagelen": {strconv.Itoa(limit)}, "sort": {"-created_on"}}
+	page, err := readPage[CommitStatus](ctx, c, APIURL+c.pullRequestPath(repo, id, "statuses")+"?"+q.Encode(), limit)
+	return Page[CommitStatus]{Values: page.Values, Total: page.Size, More: page.Next != ""}, err
 }
 
-// PullRequestDiffStat lists the files a pull request changes.
-func (c *Client) PullRequestDiffStat(ctx context.Context, repo string, id int) ([]DiffStat, error) {
-	path := c.pullRequestPath(repo, id, "diffstat")
-	target, err := c.redirectTarget(ctx, path)
-	if err != nil {
-		return nil, err
+// PullRequestDiffStat reads only the requested range of files, not preceding pages. We request
+// 100 records per API page, so a 200-file result needs at most three API reads including
+// an unaligned offset; a next link can never turn this into an unbounded traversal.
+func (c *Client) PullRequestDiffStat(ctx context.Context, snapshot DiffSnapshot, offset, limit int) (Page[DiffStat], error) {
+	var result Page[DiffStat]
+	if offset < 0 || limit < 1 || limit > 200 {
+		return result, fmt.Errorf("file offset must be nonnegative and limit between 1 and 200")
 	}
-	return listFrom[DiffStat](ctx, c, path, target.String())
+	if snapshot.target == nil {
+		return result, errors.New("a validated pull request diff snapshot is required")
+	}
+	target := *snapshot.target
+	const pageSize = 100
+	q := target.Query()
+	q.Set("pagelen", strconv.Itoa(pageSize))
+	q.Set("page", strconv.Itoa(offset/pageSize+1))
+	target.RawQuery = q.Encode()
+	next, skip := target.String(), offset%pageSize
+	for reads := 0; next != "" && reads < 3; reads++ {
+		page, err := readPage[DiffStat](ctx, c, next, pageSize)
+		if err != nil {
+			return Page[DiffStat]{}, err
+		}
+		if reads == 0 {
+			result.Total = page.Size
+		}
+		values := page.Values[min(skip, len(page.Values)):]
+		skip = 0
+		keep := min(len(values), limit-len(result.Values))
+		result.Values = append(result.Values, values[:keep]...)
+		result.More = keep < len(values) || page.Next != ""
+		if len(result.Values) == limit {
+			break
+		}
+		// Keep every page on the validated commit pair, even if a next link selects another diff.
+		next = ""
+		if page.Next != "" {
+			q.Set("page", strconv.Itoa(offset/pageSize+reads+2))
+			target.RawQuery = q.Encode()
+			next = target.String()
+		}
+	}
+	if result.More && len(result.Values) < limit {
+		return Page[DiffStat]{}, fmt.Errorf("bitbucket pagination exceeded the bounded file request")
+	}
+	return result, nil
 }
 
 // PullRequestDiff returns the git-style diff of a pull request, limited to paths when any are
 // given. It returns at most maxBytes from offset on, and whether more followed.
-func (c *Client) PullRequestDiff(ctx context.Context, repo string, id int, paths []string, offset, maxBytes int) ([]byte, bool, error) {
-	// The pull request only redirects to the diff of its commits, which takes the paths.
-	path := c.pullRequestPath(repo, id, "diff")
-	target, err := c.redirectTarget(ctx, path)
-	if err != nil {
-		return nil, false, err
+func (c *Client) PullRequestDiff(ctx context.Context, snapshot DiffSnapshot, paths []string, offset, maxBytes int) ([]byte, bool, error) {
+	if snapshot.target == nil {
+		return nil, false, errors.New("a validated pull request diff snapshot is required")
 	}
+	path, target := snapshot.path, *snapshot.target
 	if len(paths) > 0 {
 		q := target.Query()
 		q["path"] = paths

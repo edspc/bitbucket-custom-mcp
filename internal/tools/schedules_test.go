@@ -23,7 +23,7 @@ func TestAddSchedule(t *testing.T) {
 	} {
 		t.Run(pipeline, func(t *testing.T) {
 			f := newFake()
-			out, isErr := call(t, connect(t, f, nil), "add_schedule",
+			out, isErr := call(t, connectApproving(t, f), "add_schedule",
 				map[string]any{"repo": "repo-a", "branch": "main", "pipeline": pipeline, "cron": " 0 0 2  * * ? * "})
 			if isErr || !strings.Contains(out, `"created"`) {
 				t.Fatalf("result = %s (error %v)", out, isErr)
@@ -39,7 +39,7 @@ func TestAddSchedule(t *testing.T) {
 
 func TestAddScheduleKeepsExisting(t *testing.T) {
 	f := newFake()
-	cs := connect(t, f, nil)
+	cs := connectApproving(t, f)
 	args := map[string]any{"repo": "repo-a", "branch": "main", "pipeline": "custom: nightly", "cron": "0 0 2 * * ? *"}
 	mustCall(t, cs, "add_schedule", args)
 	if out := mustCall(t, cs, "add_schedule", args); !strings.Contains(out, `"already_exists"`) {
@@ -68,7 +68,7 @@ func TestAddScheduleValidatesInput(t *testing.T) {
 			f := newFake()
 			args := map[string]any{"repo": "repo-a", "branch": "main", "pipeline": "custom: nightly", "cron": "0 0 2 * * ? *"}
 			tc.edit(args)
-			out, isErr := call(t, connect(t, f, nil), "add_schedule", args)
+			out, isErr := call(t, connectApproving(t, f), "add_schedule", args)
 			if !isErr || !strings.Contains(out, tc.want) {
 				t.Fatalf("result = %s (error %v), want %q", out, isErr, tc.want)
 			}
@@ -88,7 +88,7 @@ func TestListAndDeleteSchedules(t *testing.T) {
 		{UUID: "{sch-1}", Enabled: true, Target: target("nightly"), CronPattern: "0 0 2 * * ? *", CreatedOn: "2026-10-01T08:00:00Z", UpdatedOn: "2026-10-02T08:00:00Z"},
 		{UUID: "{sch-2}", Enabled: false, Target: target("weekly"), CronPattern: "0 0 4 ? * SUN *"},
 	}
-	cs := connect(t, f, nil)
+	cs := connectApproving(t, f)
 	res := decodeResult[listSchedulesResult](t, mustCall(t, cs, "list_schedules", map[string]any{"repo": "repo-a"}))
 	if len(res.Schedules) != 2 || res.Schedules[0].Pipeline != "custom: nightly" || res.Schedules[0].Branch != "main" ||
 		res.Schedules[0].CreatedOn != "2026-10-01T08:00:00Z" || res.Schedules[0].UpdatedOn != "2026-10-02T08:00:00Z" ||
