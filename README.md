@@ -22,6 +22,11 @@ behalf of the user.
 | Snyk    | `make snyk` (`snyk test`, `snyk code test`)                |
 | OSV     | `make osv` (OSV-Scanner on `go.mod` and the built server)  |
 
+`make lint` needs [golangci-lint](https://golangci-lint.run/) built with the Go
+of `go.mod` or later, which a build with an older Go refuses:
+`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0`,
+with `$(go env GOPATH)/bin` on `PATH`.
+
 `make snyk` needs the [Snyk CLI](https://docs.snyk.io/snyk-cli), for example
 the [standalone binary](https://docs.snyk.io/snyk-cli/install-or-update-the-snyk-cli),
 signed in with `snyk auth` or given a token in
@@ -34,13 +39,14 @@ and the server built by `make build` for the Go standard library it was
 built with, which OSV-Scanner does not take from `go.mod`. Every known
 vulnerability fails it, whether the code reaches it or not.
 
-GitHub Actions run both in the Security workflow on pushes to `main` and on
-pull requests (`.github/workflows/security.yml`): the `snyk` job runs
-`make snyk` with the standalone Snyk CLI, and the `osv-scanner` job runs the
-scans of `make osv` with the scanner image of the official
-[OSV-Scanner action](https://github.com/google/osv-scanner-action). Actions
-are pinned by commit, the image by digest and the Snyk CLI by its SHA-256, and
-checkouts keep no credentials. The Snyk job reads the token from the
+GitHub Actions run on pushes to `main` and on pull requests: `make lint` and
+`make test` as separate jobs of the CI workflow (`.github/workflows/ci.yml`),
+and both scans in the Security workflow (`.github/workflows/security.yml`):
+the `snyk` job runs `make snyk` with the standalone Snyk CLI, and the
+`osv-scanner` job runs the scans of `make osv` with the scanner image of the
+official [OSV-Scanner action](https://github.com/google/osv-scanner-action).
+Actions are pinned by commit, the image by digest and the Snyk CLI by its
+SHA-256, and checkouts keep no credentials. The Snyk job reads the token from the
 repository secret `SNYK_TOKEN`.
 
 ## Configuration
