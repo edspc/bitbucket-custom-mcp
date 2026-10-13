@@ -53,11 +53,14 @@ func (t *tools) linkByKey(ctx context.Context, req *mcp.CallToolRequest, in link
 	if !now.same(link) {
 		return nil, statusResult{}, errors.New("the keys changed while awaiting approval; call the tool again; nothing changed")
 	}
+	if err = t.bb.CheckRepositoryProject(checkCtx, in.SourceRepo); err != nil {
+		return nil, statusResult{}, err
+	}
 	if err = approvalLive(page); err != nil {
 		return nil, statusResult{}, err
 	}
 	// Add before deleting, so a failure never leaves the target without a key for the source.
-	if err = t.bb.AddDeployKey(ctx, in.TargetRepo, link.PublicKey, in.SourceRepo); err != nil {
+	if err = t.bb.AddDeployKey(bitbucket.WithWriteDeadline(ctx, page.page.info.Until), in.TargetRepo, link.PublicKey, in.SourceRepo); err != nil {
 		return nil, statusResult{}, err
 	}
 	status := "added"
@@ -70,7 +73,7 @@ func (t *tools) linkByKey(ctx context.Context, req *mcp.CallToolRequest, in link
 				"remove it in Bitbucket under Repository settings > Access keys of %s",
 				in.TargetRepo, in.SourceRepo, old.ID, context.DeadlineExceeded, in.TargetRepo)
 		}
-		if err = t.bb.DeleteDeployKey(ctx, in.TargetRepo, old.ID); err != nil {
+		if err = t.bb.DeleteDeployKey(bitbucket.WithWriteDeadline(ctx, page.page.info.Until), in.TargetRepo, old.ID); err != nil {
 			return nil, statusResult{}, fmt.Errorf("the new key was added to %s, but removing the old Access Key %q (id %d) failed: %w",
 				in.TargetRepo, in.SourceRepo, old.ID, err)
 		}

@@ -15,7 +15,7 @@ const (
 	// A poll costs two requests, and Bitbucket allows a user 1,000 requests an hour to
 	// repository data. Polling at most maxPolling pipelines at a time, subscriptions and
 	// watch_pipeline calls together, every pollInterval takes 480 of them at most and leaves
-	// the rest to the other tools.
+	// the rest to the other tools. Project restrictions double both requests and the interval.
 	pollInterval        = 30 * time.Second
 	maxPolling          = 2
 	defaultWatchSeconds = 600

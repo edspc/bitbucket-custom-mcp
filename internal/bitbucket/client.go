@@ -30,8 +30,9 @@ type Config struct {
 }
 
 type Client struct {
-	http *http.Client
-	cfg  Config
+	http            *http.Client
+	cfg             Config
+	allowedProjects []string
 }
 
 func New(httpClient *http.Client, cfg Config) *Client {
@@ -114,6 +115,28 @@ func (c *Client) call(ctx context.Context, method, path string, in, out any) err
 }
 
 func (c *Client) send(ctx context.Context, method, rawURL string, auth func(*http.Request), in, out any) error {
+	checkCtx := ctx
+	if method != http.MethodGet {
+		if until, ok := ctx.Value(writeDeadlineKey{}).(time.Time); ok {
+			var cancel context.CancelFunc
+			checkCtx, cancel = context.WithDeadline(ctx, until)
+			defer cancel()
+		}
+	}
+	if err := checkCtx.Err(); err != nil {
+		return err
+	}
+	if err := c.checkProjectURL(checkCtx, rawURL); err != nil {
+		return err
+	}
+	if err := checkCtx.Err(); err != nil {
+		return err
+	}
+	return c.sendUnchecked(ctx, method, rawURL, auth, in, out)
+}
+
+// sendUnchecked is used for the repository metadata needed to authorize a request.
+func (c *Client) sendUnchecked(ctx context.Context, method, rawURL string, auth func(*http.Request), in, out any) error {
 	var body io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
@@ -185,6 +208,9 @@ func secretPayload(in any) bool {
 
 // get sends a GET of rawURL with the given headers and returns the response as it comes.
 func (c *Client) get(ctx context.Context, rawURL string, auth func(*http.Request), header http.Header) (*http.Response, error) {
+	if err := c.checkProjectURL(ctx, rawURL); err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err

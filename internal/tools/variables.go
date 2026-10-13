@@ -277,7 +277,7 @@ func (t *tools) setVariable(ctx context.Context, req *mcp.CallToolRequest, in se
 	if err = approvalLive(page); err != nil {
 		return nil, statusResult{}, err
 	}
-	status, err := t.putVariable(ctx, scope, existing, v)
+	status, err := t.putVariable(bitbucket.WithWriteDeadline(ctx, page.page.info.Until), scope, existing, v)
 	if err != nil {
 		return nil, statusResult{}, err
 	}
@@ -344,7 +344,7 @@ func (t *tools) deleteVariable(ctx context.Context, req *mcp.CallToolRequest, in
 	if err = approvalLive(page); err != nil {
 		return nil, statusResult{}, err
 	}
-	if err = t.bb.DeleteVariable(ctx, scope, existing.UUID); err != nil {
+	if err = t.bb.DeleteVariable(bitbucket.WithWriteDeadline(ctx, page.page.info.Until), scope, existing.UUID); err != nil {
 		return nil, statusResult{}, err
 	}
 	t.log.InfoContext(ctx, "deleted variable", "scope", in.Scope, "repo", in.Repo, "environment", in.Environment, "variable", in.Name)

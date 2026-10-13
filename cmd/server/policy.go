@@ -16,6 +16,7 @@ func policyFromEnv() (tools.Policy, error) {
 		list *[]string
 	}{
 		{"BITBUCKET_ALLOWED_REPOS", &policy.Repositories},
+		{"BITBUCKET_ALLOWED_PROJECTS", &policy.Projects},
 		{"BITBUCKET_ALLOWED_TOOLS", &policy.Tools},
 		{"BITBUCKET_ALLOWED_REFS", &policy.Refs},
 	} {

@@ -107,8 +107,27 @@ the server rather than silently removing the restriction.
 | Variable | Example | Restriction |
 |----------|---------|-------------|
 | `BITBUCKET_ALLOWED_REPOS` | `["repo-a","repo-b"]` | Applies to both repositories of a link and all repository tools/resources; workspace variables are disabled when this list is set |
+| `BITBUCKET_ALLOWED_PROJECTS` | `["APP","{01234567-89ab-cdef-0123-456789abcdef}"]` | Only repositories in these projects in the configured workspace; exact project keys or UUIDs, not display names; workspace variables are disabled when this list is set |
 | `BITBUCKET_ALLOWED_TOOLS` | `["get_pull_request","list_pull_requests"]` | Only these tools can execute; pipeline resources and subscriptions also require `get_pipeline` |
 | `BITBUCKET_ALLOWED_REFS` | `["branch:main","tag:v1.2.0"]` | Only these refs can run pipelines, only at commits on them, or have schedules added/deleted |
+
+Repository and project lists intersect: a repository must satisfy both when both
+are configured. For example, `BITBUCKET_ALLOWED_PROJECTS='["APP","OPS"]'` allows
+repositories in either project, and adding `BITBUCKET_ALLOWED_REPOS='["api"]'`
+limits access to `api` only if it belongs to one of those projects. Use project
+UUIDs to keep the restriction tied to the same project if its key changes.
+
+With project restrictions, each repository API request first reads its current
+`project.key` and `project.uuid` using the server's account. This adds one metadata
+request per API request and requires repository read access. Missing project
+metadata or a failed lookup refuses the operation. Membership is never cached,
+so moves out of an allowed project are checked after browser approval and during
+polling. Both repositories of a link are checked, including its source again
+before the write. Project checks before a write must finish within its approval's
+deadline; a write already sent can complete after that deadline. Workspace-wide
+operations and commit lookups in a fork outside
+the configured workspace are refused. Bitbucket provides no atomic project check
+and write: an administrator can still move a repository between those requests.
 
 Keep these settings in the operator's environment or user-scoped MCP config,
 outside the model's control. Use a dedicated account/token with only the
@@ -232,7 +251,8 @@ for a manual step) or `COMPLETED/FAILED`.
 
 Waits until the pipeline completes, pauses for a manual step or
 `timeout_seconds` pass (600 by default, at most 3600), polling every 30
-seconds. It returns the outcome (`completed`, `paused` or `timeout`), every
+seconds (60 with project restrictions). It returns the outcome (`completed`,
+`paused` or `timeout`), every
 status change of the pipeline and its steps seen on the way, and the final
 status. When the client sends a progress token, each poll is also reported as
 a progress notification.
@@ -241,7 +261,8 @@ The timeout also cancels API requests and progress notifications. On timeout the
 result contains the last complete status; `pipeline` is omitted if the first poll
 did not finish. Client cancellation remains an error.
 
-A poll costs two API requests, and Bitbucket allows 1,000 requests an hour to
+A poll costs two API requests (four with project restrictions), and Bitbucket
+allows 1,000 requests an hour to
 repository data, so at most two pipelines are polled at a time, by
 `watch_pipeline` calls and [subscriptions](#status-subscriptions) together;
 beyond that both are refused until one ends.
@@ -348,14 +369,15 @@ Every pipeline is also an MCP resource,
 subscribes to it (`resources/subscribe`, or `subscriptions/listen` from MCP
 2026-07-28) gets `notifications/resources/updated` whenever the pipeline or one
 of its steps changes state. The server polls a subscribed pipeline every 30
-seconds until it completes or pauses for a manual step, the last subscriber
+seconds (60 with project restrictions) until it completes or pauses for a manual
+step, the last subscriber
 leaves, polling fails five times in a row or 24 hours pass. Subscriptions
 share the polling limit of `watch_pipeline`; a pipeline that has already
 completed or paused is accepted but not polled.
 
 A refusal over the [rate limit](#rate-limit) is not a failure: polling rests
-as long as the response says, but at least 30 seconds, or else for a minute,
-doubling with every refusal in a row up to 15 minutes, and then goes on. When
+as long as the response says, but at least one poll interval, or else for two
+intervals, doubling with every refusal in a row up to 30 intervals, and then goes on. When
 polling stops after the failures, subscribers get one more
 `notifications/resources/updated`: reading the resource then shows the error
 while it lasts, and unsubscribing and subscribing again restarts polling.

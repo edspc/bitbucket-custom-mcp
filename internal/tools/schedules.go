@@ -141,7 +141,7 @@ func (t *tools) addSchedule(ctx context.Context, req *mcp.CallToolRequest, in ad
 	}
 	target := bitbucket.RefTarget("branch", in.Branch, "")
 	target.Selector = selector
-	created, err := t.bb.CreateSchedule(ctx, in.Repo, bitbucket.Schedule{Enabled: true, Target: target, CronPattern: cron})
+	created, err := t.bb.CreateSchedule(bitbucket.WithWriteDeadline(ctx, page.page.info.Until), in.Repo, bitbucket.Schedule{Enabled: true, Target: target, CronPattern: cron})
 	if err != nil {
 		return nil, scheduleResult{}, err
 	}
@@ -198,7 +198,7 @@ func (t *tools) deleteSchedule(ctx context.Context, req *mcp.CallToolRequest, in
 	if err = approvalLive(page); err != nil {
 		return nil, scheduleResult{}, err
 	}
-	if err = t.bb.DeleteSchedule(ctx, in.Repo, s.UUID); err != nil {
+	if err = t.bb.DeleteSchedule(bitbucket.WithWriteDeadline(ctx, page.page.info.Until), in.Repo, s.UUID); err != nil {
 		return nil, scheduleResult{}, err
 	}
 	t.log.InfoContext(ctx, "deleted schedule", "repo", in.Repo, "schedule", s.UUID)

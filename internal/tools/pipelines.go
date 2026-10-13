@@ -303,7 +303,7 @@ func (t *tools) runPipeline(ctx context.Context, req *mcp.CallToolRequest, in ru
 		return nil, runPipelineResult{}, err
 	}
 
-	p, err := t.bb.RunPipeline(ctx, in.Repo, r)
+	p, err := t.bb.RunPipeline(bitbucket.WithWriteDeadline(ctx, page.page.info.Until), in.Repo, r)
 	if err != nil {
 		return nil, runPipelineResult{}, err
 	}

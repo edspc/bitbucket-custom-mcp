@@ -27,6 +27,7 @@ import (
 type fakeBitbucket struct {
 	mu         sync.Mutex
 	pipelines  map[string]bool
+	projects   map[string]string // current project key by repository
 	sshKeys    map[string]string
 	deployKeys map[string][]bitbucket.DeployKey
 	envs       map[string][]bitbucket.Environment
@@ -259,6 +260,10 @@ func (f *fakeBitbucket) handler(t *testing.T) http.Handler {
 	// Endpoints an access token is checked against: only repo-a's own token may read them.
 	for _, path := range []string{"", "/pipelines", "/hooks"} {
 		mux.HandleFunc("GET "+repo+path, func(w http.ResponseWriter, r *http.Request) {
+			if _, _, ok := r.BasicAuth(); ok && path == "" && r.URL.Query().Get("fields") == "project.key,project.uuid" {
+				writeJSON(w, map[string]any{"project": map[string]string{"key": f.projects[r.PathValue("repo")]}})
+				return
+			}
 			switch r.Header.Get("Authorization") {
 			case "Bearer " + f.validToken:
 				writeJSON(w, map[string]any{"values": []any{}})
@@ -685,12 +690,15 @@ func connectWith(t *testing.T, f *fakeBitbucket, opts *mcp.ClientOptions, versio
 }
 
 // newTestServer serves the tools against f.
-func newTestServer(t *testing.T, f *fakeBitbucket) *mcp.Server {
+func newTestServer(t *testing.T, f *fakeBitbucket, policies ...Policy) *mcp.Server {
 	bb := bitbucket.New(&http.Client{Transport: handlerTransport{f.handler(t)}}, bitbucket.Config{
 		Workspace: "ws", Email: "dev@example.com", Token: "api-secret",
 	})
 	f.tools = &tools{ctx: t.Context(), bb: bb, log: slog.New(slog.DiscardHandler), serve: f.pages.serve,
 		secretWait: 5 * time.Second, pollInterval: 10 * time.Millisecond, watchLifetime: time.Hour}
+	if len(policies) != 0 {
+		f.tools.policy = policies[0]
+	}
 	return newServer(&mcp.Implementation{Name: "test-server", Version: "0"}, f.tools)
 }
 

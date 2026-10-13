@@ -133,10 +133,13 @@ func (t *tools) linkByToken(ctx context.Context, req *mcp.CallToolRequest, in li
 	if _, err = variableChangeArguments(in, scope, existing, page); err != nil {
 		return nil, linkByTokenResult{}, err
 	}
+	if err = t.bb.CheckRepositoryProject(checkCtx, in.SourceRepo); err != nil {
+		return nil, linkByTokenResult{}, err
+	}
 	if err = approvalLive(page); err != nil {
 		return nil, linkByTokenResult{}, err
 	}
-	status, err := t.putVariable(ctx, scope, existing, bitbucket.Variable{Key: in.VariableName, Value: token, Secured: true})
+	status, err := t.putVariable(bitbucket.WithWriteDeadline(ctx, page.page.info.Until), scope, existing, bitbucket.Variable{Key: in.VariableName, Value: token, Secured: true})
 	if err != nil {
 		return nil, linkByTokenResult{}, err
 	}

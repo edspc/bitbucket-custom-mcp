@@ -15,6 +15,7 @@ import (
 // configured workspace; non-nil empty lists deny all. Ref limits apply to runs and schedules.
 type Policy struct {
 	Repositories []string
+	Projects     []string // exact project keys or UUIDs, checked against live repository metadata
 	Tools        []string
 	Refs         []string // exact "branch:<name>" or "tag:<name>" entries
 }
@@ -62,7 +63,7 @@ func (p Policy) check(name string, in any) error {
 			}
 		}
 	}
-	if args.Scope == scopeWorkspace && p.Repositories != nil {
+	if args.Scope == scopeWorkspace && (p.Repositories != nil || p.Projects != nil) {
 		return errors.New("workspace variables are not allowed by the server policy when repository access is restricted")
 	}
 	if name == "run_pipeline" || name == "add_schedule" {
