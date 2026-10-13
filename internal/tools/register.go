@@ -70,6 +70,13 @@ func newServer(impl *mcp.Implementation, t *tools) *mcp.Server {
 	write := &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: new(true)}
 
 	mcp.AddTool(s, &mcp.Tool{
+		Name:        "get_uuid",
+		Title:       "Get a repository or deployment environment UUID",
+		Description: "Return the UUID of repo, or of its deployment environment when environment is supplied, exactly as Bitbucket returns it, including braces and letter case.",
+		Annotations: readOnly,
+	}, guarded(t, t.getUUID))
+
+	mcp.AddTool(s, &mcp.Tool{
 		Name:        "link_repos_by_key",
 		Annotations: write,
 		Title:       "Link repositories by SSH key",

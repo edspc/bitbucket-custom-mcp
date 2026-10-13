@@ -156,6 +156,16 @@ not exposing secrets in its own output.
 
 ## Tools
 
+### Repository and deployment UUIDs
+
+`get_uuid` returns the UUID of `repo` in the configured workspace. Supply
+`environment` with the exact deployment environment name to get that
+environment's UUID instead. The result's `uuid` is copied from Bitbucket
+without normalization: braces, hyphens and letter case are preserved, for
+example `{"content_trust":"untrusted","uuid":"{01234567-89ab-cdef-0123-456789abcdef}"}`.
+An unknown environment or a missing UUID is an error. This read-only tool
+respects the repository, project and tool access limits.
+
 ### Repository links
 
 Both tools link a source repository A to a target repository B in the
