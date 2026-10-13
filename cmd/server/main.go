@@ -17,6 +17,13 @@ import (
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if handled, err := commandLine(os.Args[1:], os.Stdout); handled {
+		if err != nil {
+			log.Error("invalid command line", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(context.Background(), log); err != nil {
 		log.Error("server stopped", "error", err)
 		os.Exit(1)
@@ -33,7 +40,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	s := tools.NewServer(ctx, &mcp.Implementation{Name: "bitbucket-custom-mcp", Version: "0.3.0"}, bb, log, policy)
+	s := tools.NewServer(ctx, &mcp.Implementation{Name: "bitbucket-custom-mcp", Version: version}, bb, log, policy)
 	log.Info("serving MCP over stdio", "workspace", cfg.Workspace)
 	return s.Run(ctx, &mcp.StdioTransport{})
 }

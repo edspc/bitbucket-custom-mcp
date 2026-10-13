@@ -4,6 +4,8 @@ Custom [MCP](https://modelcontextprotocol.io) server for Bitbucket Cloud,
 written in Go. It speaks MCP over stdio and calls the Bitbucket REST API on
 behalf of the user.
 
+Licensed under the [MIT License](LICENSE).
+
 ## Stack
 
 - Go
@@ -19,6 +21,8 @@ behalf of the user.
 | Install | `make install` — copies it to `~/.local/bin` (override with `BINDIR=…`) |
 | Lint    | `make lint` (`golangci-lint run ./...`)                    |
 | Tests   | `make test` (`go test -race ./...`)                        |
+| Smoke test | `make smoke` — builds and starts the executable, initializes MCP and lists tools without contacting Bitbucket |
+| Release archives | `make release` — packages the clean committed tree into `dist/v<version>/` |
 | Snyk    | `make snyk` (`snyk test`, `snyk code test`)                |
 | OSV     | `make osv` (OSV-Scanner on `go.mod` and the built server)  |
 
@@ -40,14 +44,113 @@ built with, which OSV-Scanner does not take from `go.mod`. Every known
 vulnerability fails it, whether the code reaches it or not.
 
 GitHub Actions run on pushes to `main` and on pull requests: `make lint` and
-`make test` as separate jobs of the CI workflow (`.github/workflows/ci.yml`),
-and both scans in the Security workflow (`.github/workflows/security.yml`):
+`make test` as separate jobs of the CI workflow (`.github/workflows/ci.yml`).
+Tests, including the executable smoke test, run on Linux, macOS Apple Silicon
+and macOS Intel. Both security scans run
+in the Security workflow (`.github/workflows/security.yml`):
 the `snyk` job runs `make snyk` with the standalone Snyk CLI, and the
 `osv-scanner` job runs the scans of `make osv` with the scanner image of the
 official [OSV-Scanner action](https://github.com/google/osv-scanner-action).
 Actions are pinned by commit, the image by digest and the Snyk CLI by its
 SHA-256, and checkouts keep no credentials. The Snyk job reads the token from the
 repository secret `SNYK_TOKEN`.
+
+## CLI and Homebrew packaging
+
+`bitbucket-custom-mcp --version` prints `bitbucket-custom-mcp 0.4.0` and exits.
+`--help` (or `-h`) prints usage and configuration names. These commands need no
+credentials and ignore environment configuration, even malformed policy arrays.
+Unknown arguments fail. With no arguments the executable serves MCP over stdio;
+only protocol messages go to stdout, with logs on stderr.
+
+The version in `cmd/server/cli.go` is shared by `--version` and MCP `initialize`.
+No linker flags or generated files are needed to build a release from a source
+archive. The separate Homebrew tap should:
+
+- Pin a versioned source archive and its SHA-256, and declare `license "MIT"`.
+- Declare `depends_on "go" => :build`; the compiler must satisfy `go.mod`
+  (currently Go 1.27.2 or newer).
+- Build `./cmd/server` with Homebrew's `std_go_args` into
+  `bin/bitbucket-custom-mcp`. The equivalent direct command is
+  `go build -trimpath -o <prefix>/bin/bitbucket-custom-mcp ./cmd/server`.
+- Test the installed executable with `--version` and an offline MCP handshake.
+  Runtime credentials are supplied by the MCP client, never by the formula.
+
+There is no daemon to register with `brew services`. After installation, use the
+absolute path returned by `$(brew --prefix)/bin/bitbucket-custom-mcp` in the MCP
+client's command configuration (see [Setup in Claude Code](#setup-in-claude-code)).
+Homebrew does not replace the secret manager or the `BITBUCKET_ALLOWED_*` limits.
+
+An offline `test do` for the separate formula can use Ruby's standard library:
+
+```ruby
+test do
+  require "json"
+  require "timeout"
+
+  assert_equal "bitbucket-custom-mcp #{version}", shell_output("#{bin}/bitbucket-custom-mcp --version").strip
+  env = {
+    "BITBUCKET_WORKSPACE" => "offline-test",
+    "BITBUCKET_EMAIL" => "test@example.invalid",
+    "BITBUCKET_API_TOKEN" => "not-a-real-token",
+    "BITBUCKET_ALLOWED_REPOS" => "[]",
+    "BITBUCKET_ALLOWED_PROJECTS" => "[]",
+    "BITBUCKET_ALLOWED_TOOLS" => "[]",
+    "BITBUCKET_ALLOWED_REFS" => "[]",
+  }
+  IO.popen(env, ["#{bin}/bitbucket-custom-mcp"], "r+") do |io|
+    io.puts JSON.generate(jsonrpc: "2.0", id: 1, method: "initialize", params: {
+      protocolVersion: "2025-11-25", capabilities: {},
+      clientInfo: { name: "homebrew-test", version: "1" },
+    })
+    io.flush
+    response = Timeout.timeout(15) { JSON.parse(io.readline) }
+    assert_equal 1, response.fetch("id")
+    assert_equal "bitbucket-custom-mcp", response.fetch("result").fetch("serverInfo").fetch("name")
+    assert_equal version.to_s, response.fetch("result").fetch("serverInfo").fetch("version")
+    io.close_write
+  end
+end
+```
+
+### Releases
+
+Release tags use `vMAJOR.MINOR.PATCH` and must match the executable version.
+For a release, update `version` in `cmd/server/cli.go` and the version example
+above, run the repository checks and commit. `make release` refuses uncommitted
+or untracked source files so its source archive and binaries describe the same
+commit. It produces these files under `dist/v<version>/`:
+
+- `bitbucket-custom-mcp-<version>-source.tar.gz`: committed source with one
+  top-level directory, ready for a source-build formula.
+- `bitbucket-custom-mcp-<version>-darwin-{arm64,amd64}.tar.gz` and
+  `bitbucket-custom-mcp-<version>-linux-{arm64,amd64}.tar.gz`: executables built
+  with `CGO_ENABLED=0` and `-trimpath`, accompanied by README, LICENSE and Go/module
+  license notices under `THIRD_PARTY_LICENSES/`.
+- `checksums.txt`: SHA-256 of each archive; verify with
+  `shasum -a 256 -c checksums.txt` from the archive directory.
+
+Tag the reviewed commit and push the tag, for example:
+
+```sh
+git tag -a v0.4.0 -m "Release v0.4.0"
+git push origin v0.4.0
+```
+
+The Release workflow tests the tagged code, checks the version against the tag,
+packages the archives and creates a **draft** GitHub release. Review the CI and
+Security results for that commit and the draft assets, then publish the release.
+The workflow does not change the tap or overwrite an existing release. After
+publication, the source URL for the separate formula is:
+
+```text
+https://github.com/edspc/bitbucket-custom-mcp/releases/download/v0.4.0/bitbucket-custom-mcp-0.4.0-source.tar.gz
+```
+
+Use the matching entry in that release's `checksums.txt`. GitHub's automatically
+generated tag archive is a different archive with a different checksum; do not
+mix the two URLs and checksums. A private repository also requires authenticated
+access from Homebrew to its source or release assets.
 
 ## Configuration
 
