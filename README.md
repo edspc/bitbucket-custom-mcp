@@ -57,7 +57,7 @@ repository secret `SNYK_TOKEN`.
 
 ## CLI and Homebrew packaging
 
-`bitbucket-custom-mcp --version` prints `bitbucket-custom-mcp 0.4.0` and exits.
+`bitbucket-custom-mcp --version` prints `bitbucket-custom-mcp 0.4.1` and exits.
 `--help` (or `-h`) prints usage and configuration names. These commands need no
 credentials and ignore environment configuration, even malformed policy arrays.
 Unknown arguments fail. With no arguments the executable serves MCP over stdio;
@@ -133,8 +133,8 @@ commit. It produces these files under `dist/v<version>/`:
 Tag the reviewed commit and push the tag, for example:
 
 ```sh
-git tag -a v0.4.0 -m "Release v0.4.0"
-git push origin v0.4.0
+git tag -a v0.4.1 -m "Release v0.4.1"
+git push origin v0.4.1
 ```
 
 The Release workflow tests the tagged code, checks the version against the tag,
@@ -144,7 +144,7 @@ The workflow does not change the tap or overwrite an existing release. After
 publication, the source URL for the separate formula is:
 
 ```text
-https://github.com/edspc/bitbucket-custom-mcp/releases/download/v0.4.0/bitbucket-custom-mcp-0.4.0-source.tar.gz
+https://github.com/edspc/bitbucket-custom-mcp/releases/download/v0.4.1/bitbucket-custom-mcp-0.4.1-source.tar.gz
 ```
 
 Use the matching entry in that release's `checksums.txt`. GitHub's automatically
