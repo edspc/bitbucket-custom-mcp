@@ -15,7 +15,6 @@ func TestPolicyRejectsToolsRepositoriesAndRefsBeforeRequests(t *testing.T) {
 		args   map[string]any
 	}{
 		{"tool", Policy{Tools: []string{"get_pipeline"}}, "list_pipelines", map[string]any{"repo": "repo-a"}},
-		{"empty tools", Policy{Tools: []string{}}, "get_pipeline", map[string]any{"repo": "repo-a", "pipeline": "1"}},
 		{"repo", Policy{Repositories: []string{"repo-a"}}, "list_variables", map[string]any{"scope": "repository", "repo": "repo-b"}},
 		{"empty repos", Policy{Repositories: []string{}}, "run_pipeline", map[string]any{"repo": "repo-a", "branch": "main"}},
 		{"link target", Policy{Repositories: []string{"repo-a"}}, "link_repos_by_key", keyArgs(false)},
@@ -99,5 +98,44 @@ func TestRunRefusesCommitOffTheRef(t *testing.T) {
 	}
 	if f.pages.served() || len(f.runBodyList()) != 0 {
 		t.Fatal("refused run reached the approval page")
+	}
+}
+
+func TestToolListDefaultsAndWildcard(t *testing.T) {
+	for _, names := range [][]string{nil, {}, {"*"}, {"get_pipeline", "*"}} {
+		for _, name := range []string{"get_pipeline", "run_pipeline", "future_tool"} {
+			p := Policy{Tools: names}
+			if err := p.check(name, map[string]any{"repo": "repo-a"}); err != nil {
+				t.Fatalf("tools %v rejected %s: %v", names, name, err)
+			}
+			p.Repositories = []string{"repo-b"}
+			if err := p.check(name, map[string]any{"repo": "repo-a"}); err == nil {
+				t.Fatalf("tools %v bypassed repository limits", names)
+			}
+		}
+	}
+	if err := (Policy{Tools: []string{"get_*"}}).check("get_pipeline", map[string]any{"repo": "repo-a"}); err == nil {
+		t.Fatal("partial wildcard accepted")
+	}
+}
+
+func TestConfirmationListDefaultsAndWildcard(t *testing.T) {
+	for _, names := range [][]string{nil, {}} {
+		p := Policy{ConfirmationTools: names}
+		if !p.requiresConfirmation("run_pipeline") || p.requiresConfirmation("get_pipeline") {
+			t.Fatalf("unexpected defaults for %v", names)
+		}
+	}
+	for _, names := range [][]string{{"*"}, {"run_pipeline", "*"}} {
+		p := Policy{ConfirmationTools: names}
+		for _, name := range []string{"run_pipeline", "get_pipeline", "future_tool"} {
+			if !p.requiresConfirmation(name) {
+				t.Fatalf("wildcard %v omitted %s", names, name)
+			}
+		}
+	}
+	p := Policy{ConfirmationTools: []string{"run_pipeline"}}
+	if !p.requiresConfirmation("run_pipeline") || p.requiresConfirmation("set_variable") || p.requiresConfirmation("get_pipeline") {
+		t.Fatal("explicit list not respected")
 	}
 }

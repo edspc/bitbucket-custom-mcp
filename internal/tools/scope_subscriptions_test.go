@@ -50,7 +50,7 @@ func TestScopeURIsAndPolicy(t *testing.T) {
 		}
 	}
 	f := newFake()
-	cs := connectClient(t, newTestServer(t, f, Policy{Tools: []string{}}), clientOptions(nil), "")
+	cs := connectClient(t, newTestServer(t, f, Policy{Tools: []string{"run_pipeline"}}), clientOptions(nil), "")
 	if _, err := cs.ReadResource(context.Background(), &mcp.ReadResourceParams{URI: scopeURIPrefix + "repo-a/branch/main"}); err == nil {
 		t.Fatal("scope resource bypassed tool policy")
 	}

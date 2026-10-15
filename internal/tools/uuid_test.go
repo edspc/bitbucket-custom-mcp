@@ -83,7 +83,7 @@ func TestGetUUIDRejectsInvalidInputAndPolicyBeforeRequests(t *testing.T) {
 		{"path escape", Policy{}, map[string]any{"repo": "../other"}},
 		{"repository policy", Policy{Repositories: []string{"repo-b"}}, map[string]any{"repo": "repo-a"}},
 		{"deployment repository policy", Policy{Repositories: []string{}}, map[string]any{"repo": "repo-a", "environment": "Production"}},
-		{"tool policy", Policy{Tools: []string{}}, map[string]any{"repo": "repo-a"}},
+		{"tool policy", Policy{Tools: []string{"run_pipeline"}}, map[string]any{"repo": "repo-a"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cs := connectUUID(t, tc.policy, func(http.ResponseWriter, *http.Request) {

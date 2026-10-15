@@ -31,14 +31,14 @@ Required environment variables for MCP mode:
   BITBUCKET_EMAIL       Atlassian account email
   BITBUCKET_API_TOKEN   Bitbucket API token; supply through a secret manager
 
-Optional access limits (JSON arrays; unset allows all, [] denies all):
-  BITBUCKET_ALLOWED_REPOS      Exact repository slugs
-  BITBUCKET_ALLOWED_PROJECTS   Exact project keys or UUIDs
-  BITBUCKET_ALLOWED_TOOLS      Exact tool names
-  BITBUCKET_ALLOWED_REFS       branch:<name> or tag:<name>
+Optional access limits (JSON arrays; unset allows all):
+  BITBUCKET_ALLOWED_REPOS      Exact repository slugs; [] denies all
+  BITBUCKET_ALLOWED_PROJECTS   Exact project keys or UUIDs; [] denies all
+  BITBUCKET_ALLOWED_TOOLS      Exact tool names; [] or ["*"] allows all
+  BITBUCKET_ALLOWED_REFS       branch:<name> or tag:<name>; [] denies all
 
-Optional browser confirmation (JSON array; unset confirms every write):
-  BITBUCKET_CONFIRM_TOOLS      Exact tool names; [] disables optional confirmation
+Optional browser confirmation (JSON array; unset or [] confirms every write):
+  BITBUCKET_CONFIRM_TOOLS      Exact tool names; ["*"] confirms every tool
   Secret entry always requires the browser page.
 
 --help and --version do not require environment configuration.

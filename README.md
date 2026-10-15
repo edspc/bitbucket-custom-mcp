@@ -185,17 +185,18 @@ The API token needs these scopes: `read:repository:bitbucket`,
 By default, every tool that changes Bitbucket requires a one-time confirmation
 on the server's local browser page, including operations that take no secrets.
 Set `BITBUCKET_CONFIRM_TOOLS` to a JSON array of exact tool names to require
-confirmation only for those tool calls, including read tools if desired.
+confirmation only for those tool calls, including read tools if desired. The
+entry `"*"` matches every tool; `["*"]` confirms both reads and writes.
 For example, `["run_pipeline","delete_variable","create_deployment"]` confirms
-those three tools; `[]` disables optional confirmation. An unset variable keeps
-the default. Invalid arrays prevent startup. This setting is independent of
-`BITBUCKET_ALLOWED_TOOLS` and never grants access denied by an allowlist.
+those three tools. An unset variable or `[]` keeps the default: confirm every
+write, without confirmation for reads. Invalid arrays prevent startup. This
+setting is independent of `BITBUCKET_ALLOWED_TOOLS` and never grants access denied by an allowlist.
 Calls requiring secret entry always open the browser page, regardless of this
 setting; secret values still cannot be passed as tool arguments. Resource reads
 and subscriptions use access limits, not tool-call confirmation. The MCP
-client must support URL elicitation (MCP 2025-11-25 or later); without it, writes
-are refused. Opening the page or returning `accept` through MCP does not approve
-a change: the user must review the arguments and submit the approval checkbox.
+client must support URL elicitation (MCP 2025-11-25 or later) for calls requiring
+confirmation or secret entry; without it, those calls are refused. Opening the
+page or returning `accept` through MCP does not approve a change: the user must review the arguments and submit the approval checkbox.
 Approvals are bound to the tool, its arguments and the MCP session, expire after
 10 minutes and cannot be reused.
 
@@ -215,15 +216,17 @@ the source's public key and the target's Access Keys again before it changes
 them, and a schedule deletion reads the schedule again.
 
 These optional environment variables narrow the server's authority. Each is a
-JSON array of exact names, with no wildcard expansion. An unset variable allows
-all names within the configured workspace; `[]` denies all. Invalid arrays stop
-the server rather than silently removing the restriction.
+JSON array of names. An unset variable allows all names within the configured
+workspace. For `BITBUCKET_ALLOWED_TOOLS`, `[]` also keeps that default and the
+entry `"*"` allows every tool. Repository, project and ref lists use exact names
+without wildcard expansion; `[]` denies all for those three lists. Invalid
+arrays stop the server rather than silently removing the restriction.
 
 | Variable | Example | Restriction |
 |----------|---------|-------------|
 | `BITBUCKET_ALLOWED_REPOS` | `["repo-a","repo-b"]` | Applies to both repositories of a link and all repository tools/resources; workspace variables are disabled when this list is set |
 | `BITBUCKET_ALLOWED_PROJECTS` | `["APP","{01234567-89ab-cdef-0123-456789abcdef}"]` | Only repositories in these projects in the configured workspace; exact project keys or UUIDs, not display names; workspace variables are disabled when this list is set |
-| `BITBUCKET_ALLOWED_TOOLS` | `["get_pull_request","list_pull_requests"]` | Only these tools can execute; pipeline resources and subscriptions also require `get_pipeline` |
+| `BITBUCKET_ALLOWED_TOOLS` | `["get_pull_request","list_pull_requests"]` | Only these tools can execute; unset, `[]` or `["*"]` allows all; pipeline resources and subscriptions also require `get_pipeline` |
 | `BITBUCKET_ALLOWED_REFS` | `["branch:main","tag:v1.2.0"]` | Only these refs can run pipelines, only at commits on them, or have schedules added/deleted |
 
 Repository and project lists intersect: a repository must satisfy both when both
