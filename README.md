@@ -58,7 +58,7 @@ repository secret `SNYK_TOKEN`.
 
 ## CLI and Homebrew packaging
 
-`bitbucket-custom-mcp --version` prints `bitbucket-custom-mcp 0.4.2` and exits.
+`bitbucket-custom-mcp --version` prints `bitbucket-custom-mcp 0.4.3` and exits.
 `--help` (or `-h`) prints usage and configuration names. These commands need no
 credentials and ignore environment configuration, even malformed policy arrays.
 Unknown arguments fail. With no arguments the executable serves MCP over stdio;
@@ -158,7 +158,7 @@ Both commands produce:
 After publication, the source URL for the separate formula is:
 
 ```text
-https://github.com/edspc/bitbucket-custom-mcp/releases/download/v0.4.2/bitbucket-custom-mcp-0.4.2-source.tar.gz
+https://github.com/edspc/bitbucket-custom-mcp/releases/download/v0.4.3/bitbucket-custom-mcp-0.4.3-source.tar.gz
 ```
 
 Use the matching entry in that release's `checksums.txt`. GitHub's automatically
