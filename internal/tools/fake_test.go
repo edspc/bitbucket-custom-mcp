@@ -25,20 +25,21 @@ import (
 
 // fakeBitbucket keeps just enough repository state to serve the endpoints the tools use.
 type fakeBitbucket struct {
-	mu         sync.Mutex
-	pipelines  map[string]bool
-	projects   map[string]string // current project key by repository
-	sshKeys    map[string]string
-	deployKeys map[string][]bitbucket.DeployKey
-	envs       map[string][]bitbucket.Environment
-	vars       map[string][]bitbucket.Variable // by repo, repo/envUUID for deployment variables or "workspace"
-	validToken string
-	otherToken string // a genuine token of another repository
-	failAddKey bool
-	mutations  []string
-	nextID     int
-	pages      *stubPages
-	tools      *tools // set by connect, for tests that inspect or tune the server's bookkeeping
+	mu          sync.Mutex
+	pipelines   map[string]bool
+	projects    map[string]string // current project key by repository
+	sshKeys     map[string]string
+	deployKeys  map[string][]bitbucket.DeployKey
+	deployments map[string][]bitbucket.Deployment
+	envs        map[string][]bitbucket.Environment
+	vars        map[string][]bitbucket.Variable // by repo, repo/envUUID for deployment variables or "workspace"
+	validToken  string
+	otherToken  string // a genuine token of another repository
+	failAddKey  bool
+	mutations   []string
+	nextID      int
+	pages       *stubPages
+	tools       *tools // set by connect, for tests that inspect or tune the server's bookkeeping
 
 	runs              map[string][]*bitbucket.Pipeline    // by repo, oldest first
 	steps             map[string][]bitbucket.Step         // by pipeline UUID
@@ -185,21 +186,22 @@ func connectApproving(t *testing.T, f *fakeBitbucket) *mcp.ClientSession {
 
 func newFake() *fakeBitbucket {
 	return &fakeBitbucket{
-		refCommit:  testPipelineCommit,
-		commits:    map[string]string{},
-		pipelines:  map[string]bool{"repo-a": true, "repo-b": true},
-		sshKeys:    map[string]string{"repo-a": "ssh-rsa KEYA"},
-		deployKeys: map[string][]bitbucket.DeployKey{},
-		envs:       map[string][]bitbucket.Environment{"repo-b": {{UUID: "{env-prod}", Name: "Production"}, {UUID: "{env-test}", Name: "Test"}}},
-		vars:       map[string][]bitbucket.Variable{},
-		validToken: "repo-a-token",
-		otherToken: "repo-c-token",
-		nextID:     100,
-		pages:      &stubPages{},
-		runs:       map[string][]*bitbucket.Pipeline{},
-		steps:      map[string][]bitbucket.Step{},
-		logs:       map[string]string{},
-		schedules:  map[string][]bitbucket.Schedule{},
+		deployments: map[string][]bitbucket.Deployment{},
+		refCommit:   testPipelineCommit,
+		commits:     map[string]string{},
+		pipelines:   map[string]bool{"repo-a": true, "repo-b": true},
+		sshKeys:     map[string]string{"repo-a": "ssh-rsa KEYA"},
+		deployKeys:  map[string][]bitbucket.DeployKey{},
+		envs:        map[string][]bitbucket.Environment{"repo-b": {{UUID: "{env-prod}", Name: "Production"}, {UUID: "{env-test}", Name: "Test"}}},
+		vars:        map[string][]bitbucket.Variable{},
+		validToken:  "repo-a-token",
+		otherToken:  "repo-c-token",
+		nextID:      100,
+		pages:       &stubPages{},
+		runs:        map[string][]*bitbucket.Pipeline{},
+		steps:       map[string][]bitbucket.Step{},
+		logs:        map[string]string{},
+		schedules:   map[string][]bitbucket.Schedule{},
 
 		pullRequests: map[string]*bitbucket.PullRequest{},
 		prStatuses:   map[string][]bitbucket.CommitStatus{},
@@ -295,6 +297,17 @@ func (f *fakeBitbucket) handler(t *testing.T) http.Handler {
 			hash += strings.Repeat("0", 40-len(hash))
 		}
 		writeJSON(w, bitbucket.Commit{Hash: hash})
+	})
+	mux.HandleFunc("GET "+repo+"/deployments", func(w http.ResponseWriter, r *http.Request) {
+		writeCollectionPage(w, r, f.deployments[r.PathValue("repo")])
+	})
+	mux.HandleFunc("POST "+repo+"/environments", func(w http.ResponseWriter, r *http.Request) {
+		var env bitbucket.Environment
+		decode(t, r, &env)
+		f.nextID++
+		env.UUID = fmt.Sprintf("{00000000-0000-4000-8000-%012d}", f.nextID)
+		f.envs[r.PathValue("repo")] = append(f.envs[r.PathValue("repo")], env)
+		writeJSON(w, env)
 	})
 	mux.HandleFunc("GET "+repo+"/pipelines_config", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]bool{"enabled": f.pipelines[r.PathValue("repo")]})

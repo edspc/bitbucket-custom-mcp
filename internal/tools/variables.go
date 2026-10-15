@@ -128,7 +128,7 @@ func variableChangeArguments(in any, scope bitbucket.VariableScope, existing *bi
 	if err != nil {
 		return "", err
 	}
-	if page != nil && page.page.info.Arguments != string(args) {
+	if page != nil && !page.automatic && page.page.info.Arguments != string(args) {
 		return "", errors.New("the variable destination or replacement changed while awaiting approval; call the tool again; nothing changed")
 	}
 	return string(args), nil
@@ -253,7 +253,7 @@ func (t *tools) setVariable(ctx context.Context, req *mcp.CallToolRequest, in se
 		res, err = t.askSecrets(ctx, req, in, info)
 		return res, statusResult{}, err
 	}
-	if !accepted(req) {
+	if !accepted(req, page) {
 		return nil, statusResult{Status: "cancelled", Message: "the user did not open the secret page; nothing changed"}, nil
 	}
 	values, err := t.waitSecrets(ctx, req, page)

@@ -1,18 +1,23 @@
 name: Release
 
 on:
-  push:
-    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'New stable version, without v (for example 0.5.0)'
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
   release:
+    if: github.ref_type == 'branch'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -20,21 +25,57 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      - name: Prepare version
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          python3 -B -m unittest discover -s scripts -p '*_test.py'
+          python3 -B scripts/prepare_release.py "$RELEASE_VERSION"
+          if git show-ref --verify --quiet "refs/tags/v$RELEASE_VERSION"; then
+            echo 'The release tag already exists.' >&2
+            exit 1
+          fi
+          mkdir -p .scratch
+          gh api "repos/$GH_REPO/releases" --paginate --jq '.[].tag_name' > .scratch/release-tags
+          if grep -Fx "v$RELEASE_VERSION" .scratch/release-tags; then
+            echo 'The release already exists.' >&2
+            exit 1
+          fi
       - name: Test
         run: make test
+      - name: Commit version and tag locally
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add cmd/server/cli.go README.md
+          git commit -m "Release v$RELEASE_VERSION"
+          git tag -a "v$RELEASE_VERSION" -m "Release v$RELEASE_VERSION"
       - name: Package source and binaries
         run: make release
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
-      - name: Create draft release
+          RELEASE_TAG: v${{ inputs.version }}
+      - name: Push version commit and tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            push --atomic origin "HEAD:refs/heads/$GITHUB_REF_NAME" "refs/tags/v$RELEASE_VERSION"
+      - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: v${{ inputs.version }}
         run: >-
-          gh release create "$RELEASE_TAG" --verify-tag --draft
+          gh release create "$RELEASE_TAG" --verify-tag
           --title "$RELEASE_TAG" --generate-notes
           "dist/$RELEASE_TAG/"*.tar.gz "dist/$RELEASE_TAG/checksums.txt"

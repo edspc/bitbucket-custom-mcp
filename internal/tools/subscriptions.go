@@ -83,7 +83,7 @@ func (t *tools) readPipeline(ctx context.Context, req *mcp.ReadResourceRequest) 
 // resources/updated notifications to every subscribed session.
 func (t *tools) subscribe(ctx context.Context, req *mcp.SubscribeRequest) error {
 	uri := req.Params.URI
-	p, view, err := t.lookPipeline(ctx, uri)
+	done, snapshot, err := t.subscriptionSnapshot(ctx, uri)
 	if err != nil {
 		return err
 	}
@@ -93,7 +93,7 @@ func (t *tools) subscribe(ctx context.Context, req *mcp.SubscribeRequest) error 
 		w.sessions[req.Session] = true
 		return nil
 	}
-	if settled(p.State) {
+	if done {
 		return nil
 	}
 	if err = t.checkPollingSlot(); err != nil {
@@ -102,7 +102,7 @@ func (t *tools) subscribe(ctx context.Context, req *mcp.SubscribeRequest) error 
 	pollCtx, cancel := context.WithTimeout(t.ctx, t.watchLifetime)
 	w := &pipelineWatch{cancel: cancel, sessions: map[*mcp.ServerSession]bool{req.Session: true}}
 	t.watches[uri] = w
-	go t.poll(pollCtx, uri, w, view)
+	go t.poll(pollCtx, uri, w, snapshot)
 	return nil
 }
 
@@ -128,7 +128,7 @@ func settled(s bitbucket.State) bool { return s.Completed() || s.Paused() }
 // poll tells subscribers about every change of the pipeline until it settles, everybody
 // unsubscribes, it keeps failing or its lifetime passes. Refusals over Bitbucket's rate limit are
 // not failures: polling rests until the limit lets it go on.
-func (t *tools) poll(ctx context.Context, uri string, w *pipelineWatch, prev pipelineView) {
+func (t *tools) poll(ctx context.Context, uri string, w *pipelineWatch, prev string) {
 	defer func() {
 		w.cancel()
 		t.mu.Lock()
@@ -147,7 +147,7 @@ func (t *tools) poll(ctx context.Context, uri string, w *pipelineWatch, prev pip
 		case <-time.After(wait):
 		}
 		wait = t.pollInterval
-		p, view, err := t.lookPipeline(ctx, uri)
+		done, snapshot, err := t.subscriptionSnapshot(ctx, uri)
 		if said, limited := bitbucket.RateLimited(err); limited {
 			pause = t.rateLimitPause(said, pause)
 			wait = pause
@@ -171,13 +171,13 @@ func (t *tools) poll(ctx context.Context, uri string, w *pipelineWatch, prev pip
 			continue
 		}
 		failures, pause = 0, 0
-		if len(changes(prev, view)) > 0 {
+		if prev != snapshot {
 			if err = t.server.ResourceUpdated(ctx, &mcp.ResourceUpdatedNotificationParams{URI: uri}); err != nil {
 				t.log.WarnContext(ctx, "notifying subscribers of a pipeline", "uri", uri, "error", err)
 			}
 		}
-		prev = view
-		if settled(p.State) {
+		prev = snapshot
+		if done {
 			return
 		}
 	}

@@ -24,12 +24,13 @@ const (
 
 // pendingSecrets is a secret page waiting for the call that asked for it to come back.
 type pendingSecrets struct {
-	in      any // arguments of the call that opened the page
-	page    *secretPage
-	stop    func() // closes the page; safe to call more than once
-	timer   *time.Timer
-	tool    string
-	session *mcp.ServerSession
+	automatic bool // operator policy allows this call without browser confirmation
+	in        any  // arguments of the call that opened the page
+	page      *secretPage
+	stop      func() // closes the page; safe to call more than once
+	timer     *time.Timer
+	tool      string
+	session   *mcp.ServerSession
 }
 
 // close closes the page of a call that came back; a first call has none.
@@ -45,6 +46,9 @@ func (p *pendingSecrets) close() {
 // call it returns nil.
 func (t *tools) claimSecrets(req *mcp.CallToolRequest, in any) (*pendingSecrets, error) {
 	if _, cameBack := req.Params.InputResponses[secretsInputID]; !cameBack {
+		if !t.policy.requiresConfirmation(req.Params.Name) && !needsSecrets(in) {
+			return &pendingSecrets{automatic: true, stop: func() {}, page: &secretPage{info: secretPageInfo{Until: time.Now().Add(t.secretWait)}}}, nil
+		}
 		return nil, nil
 	}
 	p := t.takePending(req.Params.RequestState)
@@ -146,13 +150,19 @@ func (t *tools) takePending(id string) *pendingSecrets {
 }
 
 // accepted reports whether the user agreed to open the secret page.
-func accepted(req *mcp.CallToolRequest) bool {
+func accepted(req *mcp.CallToolRequest, pages ...*pendingSecrets) bool {
+	if len(pages) > 0 && pages[0] != nil && pages[0].automatic {
+		return true
+	}
 	res, ok := req.Params.InputResponses[secretsInputID].(*mcp.ElicitResult)
 	return ok && res.Action == "accept"
 }
 
 // waitSecrets waits for the user to submit the values on page p, by field name.
 func (t *tools) waitSecrets(ctx context.Context, req *mcp.CallToolRequest, p *pendingSecrets) (map[string]string, error) {
+	if p.automatic {
+		return map[string]string{}, nil
+	}
 	// The page lives secretWait from its opening, not from the call coming back.
 	ctx, cancel := context.WithDeadline(ctx, p.page.info.Until)
 	defer cancel()
@@ -177,4 +187,16 @@ func (t *tools) waitSecrets(ctx context.Context, req *mcp.CallToolRequest, p *pe
 	case <-ctx.Done():
 		return nil, fmt.Errorf("nothing was submitted on the secret page (%w); nothing changed", ctx.Err())
 	}
+}
+
+func needsSecrets(in any) bool {
+	switch in := in.(type) {
+	case linkByTokenInput:
+		return true
+	case setVariableInput:
+		return in.Secured
+	case runPipelineInput:
+		return len(in.SecretVariables) > 0
+	}
+	return false
 }

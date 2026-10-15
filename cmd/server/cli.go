@@ -37,6 +37,10 @@ Optional access limits (JSON arrays; unset allows all, [] denies all):
   BITBUCKET_ALLOWED_TOOLS      Exact tool names
   BITBUCKET_ALLOWED_REFS       branch:<name> or tag:<name>
 
+Optional browser confirmation (JSON array; unset confirms every write):
+  BITBUCKET_CONFIRM_TOOLS      Exact tool names; [] disables optional confirmation
+  Secret entry always requires the browser page.
+
 --help and --version do not require environment configuration.
 Documentation: https://github.com/edspc/bitbucket-custom-mcp#readme
 `)

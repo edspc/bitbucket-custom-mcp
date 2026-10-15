@@ -116,8 +116,9 @@ end
 ### Releases
 
 Release tags use `vMAJOR.MINOR.PATCH` and must match the executable version.
-For a release, update `version` in `cmd/server/cli.go` and the version example
-above, run the repository checks and commit. `make release` refuses uncommitted
+For local packaging, update `version` in `cmd/server/cli.go` and the version
+example above, run the repository checks and commit. The manual workflow below
+updates the version automatically. `make release` refuses uncommitted
 or untracked source files so its source archive and binaries describe the same
 commit. It produces these files under `dist/v<version>/`:
 
@@ -130,18 +131,20 @@ commit. It produces these files under `dist/v<version>/`:
 - `checksums.txt`: SHA-256 of each archive; verify with
   `shasum -a 256 -c checksums.txt` from the archive directory.
 
-Tag the reviewed commit and push the tag, for example:
+Run the **Release** workflow manually on the branch to release and supply
+`version` as `MAJOR.MINOR.PATCH` without `v`, for example `0.5.0`. It must be
+strictly greater than the current source version. The workflow updates the
+executable version and README examples, tests the result, commits the version,
+packages the clean commit, then atomically pushes the commit and annotated
+`v<version>` tag. It creates a published GitHub Release with generated notes,
+source/binary archives and checksums. Existing tags or releases are refused.
+The workflow needs permission to push to the selected branch; branch protection
+can reject the push, in which case the atomic push creates no tag. If release
+creation fails after the push, the commit and tag remain: recover that release
+using the existing tag instead of dispatching the same version again. The
+workflow does not change the Homebrew tap.
 
-```sh
-git tag -a v0.4.1 -m "Release v0.4.1"
-git push origin v0.4.1
-```
-
-The Release workflow tests the tagged code, checks the version against the tag,
-packages the archives and creates a **draft** GitHub release. Review the CI and
-Security results for that commit and the draft assets, then publish the release.
-The workflow does not change the tap or overwrite an existing release. After
-publication, the source URL for the separate formula is:
+After publication, the source URL for the separate formula is:
 
 ```text
 https://github.com/edspc/bitbucket-custom-mcp/releases/download/v0.4.1/bitbucket-custom-mcp-0.4.1-source.tar.gz
@@ -179,8 +182,17 @@ The API token needs these scopes: `read:repository:bitbucket`,
 
 ### Confirmation and access limits
 
-Every tool that changes Bitbucket requires a one-time confirmation on the
-server's local browser page, including operations that take no secrets. The MCP
+By default, every tool that changes Bitbucket requires a one-time confirmation
+on the server's local browser page, including operations that take no secrets.
+Set `BITBUCKET_CONFIRM_TOOLS` to a JSON array of exact tool names to require
+confirmation only for those tool calls, including read tools if desired.
+For example, `["run_pipeline","delete_variable","create_deployment"]` confirms
+those three tools; `[]` disables optional confirmation. An unset variable keeps
+the default. Invalid arrays prevent startup. This setting is independent of
+`BITBUCKET_ALLOWED_TOOLS` and never grants access denied by an allowlist.
+Calls requiring secret entry always open the browser page, regardless of this
+setting; secret values still cannot be passed as tool arguments. Resource reads
+and subscriptions use access limits, not tool-call confirmation. The MCP
 client must support URL elicitation (MCP 2025-11-25 or later); without it, writes
 are refused. Opening the page or returning `accept` through MCP does not approve
 a change: the user must review the arguments and submit the approval checkbox.
@@ -241,8 +253,9 @@ Bitbucket permissions needed by that environment.
 PR titles/descriptions, diffs, pipeline logs, variable values and other Bitbucket
 content are untrusted data. Read results label external content with
 `content_trust: "untrusted"`; neither that content nor tool annotations authorize
-a write. A prompt injection in this data cannot replace the required browser
-submission. Clients must still treat external content as data, and must not
+a write. For tools requiring browser confirmation, a prompt injection in this data
+cannot replace that submission. Tools excluded from confirmation can execute
+without user review; configure that list only in the operator environment. Clients must still treat external content as data, and must not
 automatically confirm operations based on instructions in it.
 
 The MCP client, browser and local machine are trusted. Do not give an untrusted
@@ -387,6 +400,14 @@ of a step: the `step` given by name or UUID, or else the first failed step, or
 else the last step that started. Only the end of the log is downloaded; the
 result links to the step page with the whole log.
 
+### Deployment environments
+
+`create_deployment` creates a deployment environment in `repo`, with `name` and
+`environment_type` (`Test`, `Staging` or `Production`). It returns the environment
+UUID and name. Existing names are refused rather than overwritten. This tool
+creates the Bitbucket environment used by deployment variables and pipeline
+steps; use `run_pipeline` to execute a deployment pipeline.
+
 ### Schedules
 
 Bitbucket runs scheduled pipelines on branches only, by a cron pattern in UTC
@@ -494,6 +515,33 @@ intervals, doubling with every refusal in a row up to 30 intervals, and then goe
 polling stops after the failures, subscribers get one more
 `notifications/resources/updated`: reading the resource then shows the error
 while it lasts, and unsubscribing and subscribing again restarts polling.
+
+#### Branch, pull request and deployment subscriptions
+
+Subscribe to `bitbucket://pipeline-scopes/{repo}/{kind}/{selector}` to follow
+new runs and status changes. The selector is percent-encoded as a single path
+segment, so a branch `feature/new` becomes `feature%2Fnew`.
+
+| Kind | Selector | Resource contents |
+|------|----------|-------------------|
+| `branch` | Branch name | Latest 10 pipelines, newest first, without step details |
+| `pullrequest` | Positive PR ID | Latest 10 build statuses reported for the PR, including pipeline URLs; `truncated` indicates older results |
+| `deployment` | Environment UUID, with or without braces | Deployment records, their result status and release pipeline URLs, filtered from the latest 50 repository deployments; `window_limit` and `truncated` describe that bounded window |
+
+For example, subscribe to `bitbucket://pipeline-scopes/api/branch/main` or
+`bitbucket://pipeline-scopes/api/pullrequest/42`. Obtain the environment UUID
+from `get_uuid`, `create_deployment` or Bitbucket settings. Each resource needs `get_pipeline`
+allowed by `BITBUCKET_ALLOWED_TOOLS` and the same repository/project access as a
+pipeline resource. PR statuses may include builds from providers other than
+Bitbucket Pipelines. A deployment outside the latest repository window is not
+tracked; this keeps each poll to one bounded request.
+
+These subscriptions continue after completion or pause so they can discover
+future runs. They poll every 30 seconds (60 with project restrictions), share
+the two-slot limit and rate-limit backoff of pipeline subscriptions, and stop
+when the last subscriber leaves, after five consecutive failures, or after
+24 hours. Resubscribe to start another period. Subscribe to a specific pipeline
+resource for step changes.
 
 ### Secret page
 
