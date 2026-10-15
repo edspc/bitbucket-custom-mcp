@@ -142,13 +142,53 @@ func TestListPipelinesNewestFirst(t *testing.T) {
 	f.mu.Lock()
 	queries := f.listQueries
 	f.mu.Unlock()
-	if len(queries) != 2 || queries[0] != "pagelen=2&sort=-created_on" || queries[1] != "pagelen=10&sort=-created_on&target.branch=main" {
+	if len(queries) != 2 || queries[0] != "page=1&pagelen=2&sort=-created_on" || queries[1] != "page=1&pagelen=10&sort=-created_on&target.branch=main" {
 		t.Fatalf("queries = %v", queries)
 	}
 	for _, limit := range []int{51, -1} {
 		if out, isErr := call(t, cs, "list_pipelines", map[string]any{"repo": "repo-a", "limit": limit}); !isErr || !strings.Contains(out, "between 1 and 50") {
 			t.Fatalf("limit %d = %s (error %v)", limit, out, isErr)
 		}
+	}
+	if out, isErr := call(t, cs, "list_pipelines", map[string]any{"repo": "repo-a", "page": -1}); !isErr || !strings.Contains(out, "page must be 1 or more") {
+		t.Fatalf("page -1 = %s (error %v)", out, isErr)
+	}
+}
+
+func TestListPipelinesPages(t *testing.T) {
+	f := newFake()
+	for range 5 {
+		f.addRun("repo-a", completed("SUCCESSFUL"))
+	}
+	cs := connect(t, f, nil)
+
+	var builds []int
+	args := map[string]any{"repo": "repo-a", "limit": 2}
+	for range 3 {
+		out := mustCall(t, cs, "list_pipelines", args)
+		res := decodeResult[listPipelinesResult](t, out)
+		if res.Total == nil || *res.Total != 5 {
+			t.Fatalf("total = %v in %s", res.Total, out)
+		}
+		for _, p := range res.Pipelines {
+			builds = append(builds, p.BuildNumber)
+		}
+		if res.NextPage == 0 {
+			if strings.Contains(out, "next_page") {
+				t.Fatalf("the last page names a next one: %s", out)
+			}
+			break
+		}
+		args["page"] = res.NextPage
+	}
+	if !slices.Equal(builds, []int{5, 4, 3, 2, 1}) {
+		t.Fatalf("builds = %v, want every pipeline once, newest first", builds)
+	}
+	f.mu.Lock()
+	queries := slices.Clone(f.listQueries)
+	f.mu.Unlock()
+	if want := []string{"page=1&pagelen=2&sort=-created_on", "page=2&pagelen=2&sort=-created_on", "page=3&pagelen=2&sort=-created_on"}; !slices.Equal(queries, want) {
+		t.Fatalf("queries = %q, want %q", queries, want)
 	}
 }
 

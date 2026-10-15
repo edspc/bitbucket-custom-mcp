@@ -136,6 +136,22 @@ func optionalCount(field string, n, def, most int) (int, error) {
 	return n, nil
 }
 
+// optionalPage returns page number n, or the first page when n is omitted.
+func optionalPage(n int) (int, error) {
+	if n < 0 {
+		return 0, errors.New("page must be 1 or more")
+	}
+	return max(n, 1), nil
+}
+
+// nextPage is the page after page when there is more, and 0, which results omit, when not.
+func nextPage(page int, more bool) int {
+	if !more {
+		return 0
+	}
+	return page + 1
+}
+
 func (t *tools) getPipeline(ctx context.Context, _ *mcp.CallToolRequest, in pipelineRef) (*mcp.CallToolResult, pipelineView, error) {
 	if err := in.validate(); err != nil {
 		return nil, pipelineView{}, err
@@ -147,11 +163,14 @@ func (t *tools) getPipeline(ctx context.Context, _ *mcp.CallToolRequest, in pipe
 type listPipelinesInput struct {
 	Repo   string `json:"repo" jsonschema:"repository slug"`
 	Branch string `json:"branch,omitempty" jsonschema:"only pipelines that built this branch"`
-	Limit  int    `json:"limit,omitempty" jsonschema:"how many of the latest pipelines to return; 10 when omitted, at most 50"`
+	Limit  int    `json:"limit,omitempty" jsonschema:"how many pipelines a page holds; 10 when omitted, at most 50"`
+	Page   int    `json:"page,omitempty" jsonschema:"page to return, from 1 for the latest pipelines; 1 when omitted. Pass next_page of the previous result, with the same branch and limit"`
 }
 
 type listPipelinesResult struct {
 	Pipelines []pipelineView `json:"pipelines" jsonschema:"newest first, without steps"`
+	NextPage  int            `json:"next_page,omitempty" jsonschema:"page with the older pipelines, passed back as page; omitted on the last page"`
+	Total     *int           `json:"total,omitempty" jsonschema:"how many pipelines there are in all, on branch when it is set, when Bitbucket reports it"`
 }
 
 func (t *tools) listPipelines(ctx context.Context, _ *mcp.CallToolRequest, in listPipelinesInput) (*mcp.CallToolResult, listPipelinesResult, error) {
@@ -162,15 +181,19 @@ func (t *tools) listPipelines(ctx context.Context, _ *mcp.CallToolRequest, in li
 	if err != nil {
 		return nil, listPipelinesResult{}, err
 	}
-	ps, err := t.bb.ListPipelines(ctx, in.Repo, in.Branch, limit)
+	page, err := optionalPage(in.Page)
 	if err != nil {
 		return nil, listPipelinesResult{}, err
 	}
-	views := make([]pipelineView, 0, len(ps))
-	for _, p := range ps {
+	ps, err := t.bb.ListPipelines(ctx, in.Repo, in.Branch, page, limit)
+	if err != nil {
+		return nil, listPipelinesResult{}, err
+	}
+	views := make([]pipelineView, 0, len(ps.Values))
+	for _, p := range ps.Values {
 		views = append(views, t.viewPipeline(in.Repo, p, nil))
 	}
-	return nil, listPipelinesResult{Pipelines: views}, nil
+	return nil, listPipelinesResult{Pipelines: views, NextPage: nextPage(page, ps.More), Total: ps.Total}, nil
 }
 
 type runVariable struct {

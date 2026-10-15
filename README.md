@@ -380,8 +380,15 @@ bitbucket.org and its `resource_uri`.
 
 #### `list_pipelines`, `get_pipeline`
 
-`list_pipelines` returns the latest pipelines of `repo`, newest first
-(`limit`, 10 by default and at most 50; `branch` to filter). `get_pipeline`
+`list_pipelines` returns the pipelines of `repo`, newest first, a page at a
+time (`limit` a page, 10 by default and at most 50; `branch` to filter).
+`page`, 1 by default, picks the page; `next_page` in the result is passed back
+as `page`, with the same `branch` and `limit`, for older pipelines, and is
+omitted on the last page. `total` counts the pipelines of `repo`, or of
+`branch` when set, when Bitbucket reports it.
+Pages are counted from the newest pipeline, so a run started between two calls
+moves the next page by one and repeats a pipeline. A call costs one API
+request. `get_pipeline`
 returns one `pipeline`, by build number or UUID (with or without its braces),
 with the state of each step.
 States read like `PENDING`, `IN_PROGRESS/RUNNING`, `IN_PROGRESS/PAUSED` (waits
@@ -447,12 +454,17 @@ year (`0 0 2 * * ? *` runs at 02:00 UTC every day).
 ### Pull requests
 
 `list_pull_requests` lists the pull requests of `repo`, the most recently
-updated first (`limit`, 10 by default and at most 50): open ones, or those
-in `state` `MERGED`, `DECLINED`, `SUPERSEDED` or `ALL`; `source_branch` and
-`destination_branch` keep those from or into a branch. Each comes with its
-ID, title, state, draft flag, author, source and destination branches with
-their commits and repositories, dates, comment and open task counts, and its
-page on bitbucket.org. A call costs one API request.
+updated first, a page at a time (`limit` a page, 10 by default and at most
+50): open ones, or those in `state` `MERGED`, `DECLINED`, `SUPERSEDED` or
+`ALL`; `source_branch` and `destination_branch` keep those from or into a
+branch. Each comes with its ID, title, state, draft flag, author, source and
+destination branches with their commits and repositories, dates, comment and
+open task counts, and its page on bitbucket.org. `page`, 1 by default, picks
+the page; `next_page` is passed back as `page`, with the same filters and
+`limit`, for the next one, and is omitted on the last page. `total` counts the
+pull requests the filters pick when Bitbucket reports it. An update between two
+calls reorders the list, so a pull request can repeat or be skipped. A call
+costs one API request.
 
 `get_pull_request` describes pull request `pull_request` (its ID) of
 `repo`:

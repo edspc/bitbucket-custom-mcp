@@ -71,8 +71,11 @@ func TestListPullRequestsShowsSummaries(t *testing.T) {
 	addPullRequest(f)
 	out := mustCall(t, connect(t, f, nil), "list_pull_requests", map[string]any{"repo": "repo-a", "state": "MERGED"})
 	got := decodeResult[listPullRequestsResult](t, out)
-	if !reflect.DeepEqual(got, listPullRequestsResult{PullRequests: []pullRequestSummary{loginSummary()}}) {
+	if !reflect.DeepEqual(got, listPullRequestsResult{PullRequests: []pullRequestSummary{loginSummary()}, Total: new(1)}) {
 		t.Fatalf("result = %+v", got)
+	}
+	if strings.Contains(out, "next_page") {
+		t.Fatalf("a single page names a next one: %s", out)
 	}
 	if !strings.Contains(out, `"pull_requests":[`) {
 		t.Fatalf("result = %s", out)
@@ -80,12 +83,38 @@ func TestListPullRequestsShowsSummaries(t *testing.T) {
 	f.mu.Lock()
 	queries := slices.Clone(f.prListQueries)
 	f.mu.Unlock()
-	if want := []string{"pagelen=10&sort=-updated_on&state=MERGED"}; !slices.Equal(queries, want) {
+	if want := []string{"page=1&pagelen=10&sort=-updated_on&state=MERGED"}; !slices.Equal(queries, want) {
 		t.Fatalf("queries = %q, want the 10 most recently updated by default", queries)
 	}
 	none := mustCall(t, connect(t, f, nil), "list_pull_requests", map[string]any{"repo": "repo-a"})
 	if !strings.Contains(none, `"pull_requests":[]`) {
 		t.Fatalf("an empty list = %s", none)
+	}
+}
+
+func TestListPullRequestsPages(t *testing.T) {
+	f := newFake()
+	addPullRequests(f)
+	cs := connect(t, f, nil)
+	args := map[string]any{"repo": "repo-a", "state": "ALL", "destination_branch": "main", "limit": 3}
+	first := decodeResult[listPullRequestsResult](t, mustCall(t, cs, "list_pull_requests", args))
+	if first.NextPage != 2 || first.Total == nil || *first.Total != 4 {
+		t.Fatalf("first page = %+v", first)
+	}
+	args["page"] = first.NextPage
+	out := mustCall(t, cs, "list_pull_requests", args)
+	if got := listedIDs(t, out); !slices.Equal(got, []int{11}) || strings.Contains(out, "next_page") {
+		t.Fatalf("second page = %s", out)
+	}
+	ids := listedIDs(t, mustCall(t, cs, "list_pull_requests", map[string]any{"repo": "repo-a", "state": "ALL", "destination_branch": "main", "limit": 3}))
+	if !slices.Equal(ids, []int{8, 10, 7}) {
+		t.Fatalf("first page = %v", ids)
+	}
+	f.mu.Lock()
+	queries := slices.Clone(f.prListQueries)
+	f.mu.Unlock()
+	if len(queries) != 3 || !strings.HasPrefix(queries[1], "page=2&pagelen=3&") {
+		t.Fatalf("queries = %q", queries)
 	}
 }
 
@@ -97,6 +126,7 @@ func TestListPullRequestsRefusesBadInput(t *testing.T) {
 		"no repo":       {map[string]any{"repo": ""}, "repo is required"},
 		"unknown state": {map[string]any{"repo": "repo-a", "state": "CLOSED"}, `state must be OPEN, MERGED, DECLINED, SUPERSEDED or ALL, got "CLOSED"`},
 		"too many":      {map[string]any{"repo": "repo-a", "limit": 51}, "limit must be between 1 and 50"},
+		"negative page": {map[string]any{"repo": "repo-a", "page": -1}, "page must be 1 or more"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFake()

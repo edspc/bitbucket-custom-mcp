@@ -167,22 +167,24 @@ func TestListPullRequests(t *testing.T) {
 			t.Errorf("path = %s", r.URL.Path)
 		}
 		queries = append(queries, r.URL.Query())
-		_, _ = io.WriteString(w, `{"values": [{"id": 8, "title": "Search", "source": {"branch": {"name": "feature/search"}}}]}`)
+		_, _ = io.WriteString(w, `{"values": [{"id": 8, "title": "Search", "source": {"branch": {"name": "feature/search"}}}], "size": 6, `+
+			`"next": "https://api.bitbucket.org/2.0/repositories/ws/repo-a/pullrequests?page=3"}`)
 	})
 	ctx := context.Background()
 	prs, err := c.ListPullRequests(ctx, "repo-a", PullRequestFilter{
 		States: []string{"OPEN", "MERGED"}, SourceBranch: `fix/"quoted" \ name`, DestinationBranch: "main",
-	}, 5)
-	if err != nil || len(prs) != 1 || prs[0].ID != 8 || prs[0].Source.Branch.Name != "feature/search" {
+	}, 2, 5)
+	if err != nil || len(prs.Values) != 1 || prs.Values[0].ID != 8 || prs.Values[0].Source.Branch.Name != "feature/search" ||
+		!prs.More || prs.Total == nil || *prs.Total != 6 {
 		t.Fatalf("ListPullRequests = %+v, %v", prs, err)
 	}
-	if _, err = c.ListPullRequests(ctx, "repo-a", PullRequestFilter{}, 10); err != nil {
+	if _, err = c.ListPullRequests(ctx, "repo-a", PullRequestFilter{}, 1, 10); err != nil {
 		t.Fatal(err)
 	}
 	want := []url.Values{
-		{"state": {"OPEN", "MERGED"}, "sort": {"-updated_on"}, "pagelen": {"5"},
+		{"state": {"OPEN", "MERGED"}, "sort": {"-updated_on"}, "pagelen": {"5"}, "page": {"2"},
 			"q": {`source.branch.name = "fix/\"quoted\" \\ name" AND destination.branch.name = "main"`}},
-		{"sort": {"-updated_on"}, "pagelen": {"10"}},
+		{"sort": {"-updated_on"}, "pagelen": {"10"}, "page": {"1"}},
 	}
 	if !reflect.DeepEqual(queries, want) {
 		t.Fatalf("queries = %v", queries)

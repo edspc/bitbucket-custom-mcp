@@ -135,17 +135,15 @@ func (c *Client) RunPipeline(ctx context.Context, repo string, r RunRequest) (Pi
 	return p, err
 }
 
-// ListPipelines returns up to limit latest pipelines of repo, newest first, on branch if set.
-func (c *Client) ListPipelines(ctx context.Context, repo, branch string, limit int) ([]Pipeline, error) {
-	q := url.Values{"sort": {"-created_on"}, "pagelen": {strconv.Itoa(limit)}}
+// ListPipelines returns page number page, from 1, of the pipelines of repo, limit a page, newest
+// first, on branch if set.
+func (c *Client) ListPipelines(ctx context.Context, repo, branch string, page, limit int) (Page[Pipeline], error) {
+	q := url.Values{"sort": {"-created_on"}, "pagelen": {strconv.Itoa(limit)}, "page": {strconv.Itoa(page)}}
 	if branch != "" {
 		q.Set("target.branch", branch)
 	}
-	var page struct {
-		Values []Pipeline `json:"values"`
-	}
-	err := c.call(ctx, http.MethodGet, c.pipelinesPath(repo)+"?"+q.Encode(), nil, &page)
-	return page.Values, err
+	p, err := readPage[Pipeline](ctx, c, APIURL+c.pipelinesPath(repo)+"?"+q.Encode(), limit)
+	return Page[Pipeline]{Values: p.Values, Total: p.Size, More: p.Next != ""}, err
 }
 
 // GetPipeline finds a pipeline of repo by its UUID or its build number.

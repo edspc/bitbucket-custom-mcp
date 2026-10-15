@@ -129,9 +129,10 @@ func newServer(impl *mcp.Implementation, t *tools) *mcp.Server {
 			"through URL elicitation. Returns the started pipeline; follow it with watch_pipeline.",
 	}, guarded(t, t.runPipeline))
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "list_pipelines",
-		Title:       "List pipelines",
-		Description: "List the latest pipelines of a repository, newest first, optionally on one branch.",
+		Name:  "list_pipelines",
+		Title: "List pipelines",
+		Description: "List the pipelines of a repository, newest first, optionally on one branch, a page at a time: " +
+			"pass next_page back as page, with the same branch and limit, for older ones.",
 		Annotations: readOnly,
 	}, guarded(t, t.listPipelines))
 	mcp.AddTool(s, &mcp.Tool{
@@ -196,7 +197,8 @@ func newServer(impl *mcp.Implementation, t *tools) *mcp.Server {
 		Name:  "list_pull_requests",
 		Title: "List pull requests",
 		Description: "List pull requests of a repository, the most recently updated first: open ones, or those in " +
-			"another state, optionally only from a source branch or into a destination branch. " +
+			"another state, optionally only from a source branch or into a destination branch, a page at a time: " +
+			"pass next_page back as page, with the same filters and limit, for the next one. " +
 			"get_pull_request shows the description, reviewers, builds and changed files of one, and their diffs.",
 		Annotations: readOnly,
 	}, guarded(t, t.listPullRequests))

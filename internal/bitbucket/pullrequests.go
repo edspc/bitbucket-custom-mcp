@@ -85,10 +85,11 @@ type PullRequestFilter struct {
 	DestinationBranch string
 }
 
-// ListPullRequests returns up to limit pull requests of repo, at most 50, that f picks, the most
-// recently updated first. Listed pull requests have no participants.
-func (c *Client) ListPullRequests(ctx context.Context, repo string, f PullRequestFilter, limit int) ([]PullRequest, error) {
-	q := url.Values{"sort": {"-updated_on"}, "pagelen": {strconv.Itoa(limit)}, "state": f.States}
+// ListPullRequests returns page number page, from 1, of the pull requests of repo that f picks,
+// limit a page and at most 50, the most recently updated first. Listed pull requests have no
+// participants.
+func (c *Client) ListPullRequests(ctx context.Context, repo string, f PullRequestFilter, page, limit int) (Page[PullRequest], error) {
+	q := url.Values{"sort": {"-updated_on"}, "pagelen": {strconv.Itoa(limit)}, "page": {strconv.Itoa(page)}, "state": f.States}
 	var conditions []string
 	if f.SourceBranch != "" {
 		conditions = append(conditions, "source.branch.name = "+queryString(f.SourceBranch))
@@ -99,11 +100,8 @@ func (c *Client) ListPullRequests(ctx context.Context, repo string, f PullReques
 	if len(conditions) > 0 {
 		q.Set("q", strings.Join(conditions, " AND "))
 	}
-	var page struct {
-		Values []PullRequest `json:"values"`
-	}
-	err := c.call(ctx, http.MethodGet, c.repoPath(repo, "pullrequests")+"?"+q.Encode(), nil, &page)
-	return page.Values, err
+	p, err := readPage[PullRequest](ctx, c, APIURL+c.repoPath(repo, "pullrequests")+"?"+q.Encode(), limit)
+	return Page[PullRequest]{Values: p.Values, Total: p.Size, More: p.Next != ""}, err
 }
 
 // queryString quotes s for Bitbucket's filter language, so a name cannot end the string early.
