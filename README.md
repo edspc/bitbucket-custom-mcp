@@ -22,7 +22,8 @@ Licensed under the [MIT License](LICENSE).
 | Lint    | `make lint` (`golangci-lint run ./...`)                    |
 | Tests   | `make test` (`go test -race ./...`)                        |
 | Smoke test | `make smoke` — builds and starts the executable, initializes MCP and lists tools without contacting Bitbucket |
-| Release archives | `make release` — packages the clean committed tree into `dist/v<version>/` |
+| Release archives | `make release` — packages the clean tagged commit with GoReleaser into `dist/` |
+| Snapshot archives | `make release-snapshot` — builds local archives without publishing |
 | Snyk    | `make snyk` (`snyk test`, `snyk code test`)                |
 | OSV     | `make osv` (OSV-Scanner on `go.mod` and the built server)  |
 
@@ -115,34 +116,44 @@ end
 
 ### Releases
 
-Release tags use `vMAJOR.MINOR.PATCH` and must match the executable version.
-For local packaging, update `version` in `cmd/server/cli.go` and the version
-example above, run the repository checks and commit. The manual workflow below
-updates the version automatically. `make release` refuses uncommitted
-or untracked source files so its source archive and binaries describe the same
-commit. It produces these files under `dist/v<version>/`:
+Releases use [GoReleaser](https://goreleaser.com/) v2.18.3 and the configuration
+in `.goreleaser.yaml`. Install that version of its CLI to package locally;
+GitHub Actions installs the pinned version through the GoReleaser action.
+GoReleaser reads the version from the Git tag (`vMAJOR.MINOR.PATCH`). The tag
+must match the version committed in `cmd/server/cli.go`, so binaries and installs
+built from a source archive report the same version. A pre-release hook checks
+this match and gathers the Go and module license notices.
+
+Run the **Release** workflow manually on the branch to release and supply
+`version` as `MAJOR.MINOR.PATCH` without `v`, for example `0.5.0`. It must be
+strictly greater than the current source version. The workflow updates the
+executable version and README examples, tests the result, commits the version,
+and atomically pushes the commit and annotated `v<version>` tag. GoReleaser then
+builds and publishes the GitHub Release, including its changelog and assets.
+Existing tags or releases are refused. The workflow needs permission to push to
+the selected branch; branch protection can reject the atomic push without
+creating a tag. If GoReleaser fails after the push, the commit and tag remain:
+recover the release from that existing tag instead of dispatching the same
+version again. The workflow does not change the Homebrew tap.
+
+For local release packaging, check out a clean commit tagged with its executable
+version, then run `make release`. This validates the release and creates the
+archives in `dist/` without publishing. `make release-snapshot` also works from
+an untagged or dirty checkout, using a `-SNAPSHOT` version derived from the latest
+tag; it skips the source-version check and never publishes. The executable in a
+snapshot still reports its committed source version.
+
+Both commands produce:
 
 - `bitbucket-custom-mcp-<version>-source.tar.gz`: committed source with one
-  top-level directory, ready for a source-build formula.
+  top-level directory, ready for a source-build formula. Snapshot source archives
+  also come from the committed tree, while snapshot binaries use the working tree.
 - `bitbucket-custom-mcp-<version>-darwin-{arm64,amd64}.tar.gz` and
   `bitbucket-custom-mcp-<version>-linux-{arm64,amd64}.tar.gz`: executables built
   with `CGO_ENABLED=0` and `-trimpath`, accompanied by README, LICENSE and Go/module
   license notices under `THIRD_PARTY_LICENSES/`.
 - `checksums.txt`: SHA-256 of each archive; verify with
   `shasum -a 256 -c checksums.txt` from the archive directory.
-
-Run the **Release** workflow manually on the branch to release and supply
-`version` as `MAJOR.MINOR.PATCH` without `v`, for example `0.5.0`. It must be
-strictly greater than the current source version. The workflow updates the
-executable version and README examples, tests the result, commits the version,
-packages the clean commit, then atomically pushes the commit and annotated
-`v<version>` tag. It creates a published GitHub Release with generated notes,
-source/binary archives and checksums. Existing tags or releases are refused.
-The workflow needs permission to push to the selected branch; branch protection
-can reject the push, in which case the atomic push creates no tag. If release
-creation fails after the push, the commit and tag remain: recover that release
-using the existing tag instead of dispatching the same version again. The
-workflow does not change the Homebrew tap.
 
 After publication, the source URL for the separate formula is:
 
