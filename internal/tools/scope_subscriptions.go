@@ -70,12 +70,14 @@ func (t *tools) scopeSnapshot(ctx context.Context, uri string) (string, error) {
 	var data any
 	switch kind {
 	case "branch":
-		ps, err := t.bb.ListPipelines(ctx, repo, selector, defaultListLimit)
+		ps, err := t.bb.ListPipelines(ctx, repo, selector, 1, defaultListLimit)
 		if err != nil {
 			return "", err
 		}
-		result := listPipelinesResult{Pipelines: make([]pipelineView, 0, len(ps))}
-		for _, p := range ps {
+		// The resource is the latest page only: it has no next_page to follow, and its content
+		// stays what subscribers already compare.
+		result := listPipelinesResult{Pipelines: make([]pipelineView, 0, len(ps.Values))}
+		for _, p := range ps.Values {
 			result.Pipelines = append(result.Pipelines, t.viewPipeline(repo, p, nil))
 		}
 		data = result

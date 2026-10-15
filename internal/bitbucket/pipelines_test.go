@@ -45,14 +45,34 @@ func TestListPipelinesQuery(t *testing.T) {
 	var got string
 	c := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		got = r.URL.Path + "?" + r.URL.RawQuery
-		_, _ = fmt.Fprint(w, `{"values": [{"build_number": 2}, {"build_number": 1}], "next": "https://api.bitbucket.org/2.0/x?page=2"}`)
+		_, _ = fmt.Fprint(w, `{"values": [{"build_number": 2}, {"build_number": 1}], "size": 9, "next": "https://api.bitbucket.org/2.0/x?page=4"}`)
 	})
-	ps, err := c.ListPipelines(context.Background(), "repo-a", "main", 5)
-	if err != nil || len(ps) != 2 || ps[0].BuildNumber != 2 {
+	ps, err := c.ListPipelines(context.Background(), "repo-a", "main", 3, 2)
+	if err != nil || len(ps.Values) != 2 || ps.Values[0].BuildNumber != 2 || !ps.More || ps.Total == nil || *ps.Total != 9 {
 		t.Fatalf("ListPipelines = %+v, %v", ps, err)
 	}
-	if want := "/2.0/repositories/ws/repo-a/pipelines/?pagelen=5&sort=-created_on&target.branch=main"; got != want {
+	if want := "/2.0/repositories/ws/repo-a/pipelines/?page=3&pagelen=2&sort=-created_on&target.branch=main"; got != want {
 		t.Errorf("request = %s, want %s", got, want)
+	}
+}
+
+func TestListPipelinesLastPage(t *testing.T) {
+	c := newTestClient(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"values": [{"build_number": 1}]}`)
+	})
+	ps, err := c.ListPipelines(context.Background(), "repo-a", "", 2, 5)
+	if err != nil || len(ps.Values) != 1 || ps.More || ps.Total != nil {
+		t.Fatalf("ListPipelines = %+v, %v", ps, err)
+	}
+}
+
+// A page with more pipelines than asked for is refused rather than passed on unbounded.
+func TestListPipelinesRefusesOversizedPage(t *testing.T) {
+	c := newTestClient(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"values": [{"build_number": 3}, {"build_number": 2}, {"build_number": 1}]}`)
+	})
+	if ps, err := c.ListPipelines(context.Background(), "repo-a", "", 1, 2); err == nil {
+		t.Fatalf("ListPipelines = %+v, want an error", ps)
 	}
 }
 

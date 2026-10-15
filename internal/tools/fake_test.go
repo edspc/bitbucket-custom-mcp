@@ -442,10 +442,7 @@ func (f *fakeBitbucket) handler(t *testing.T) http.Handler {
 			}
 		}
 		slices.SortFunc(out, func(a, b *bitbucket.PullRequest) int { return strings.Compare(b.UpdatedOn, a.UpdatedOn) })
-		if n, _ := strconv.Atoi(q.Get("pagelen")); n < len(out) {
-			out = out[:n]
-		}
-		page(w, out)
+		writeCollectionPage(w, r, out)
 	})
 	prKey := func(r *http.Request) string { return r.PathValue("repo") + "/" + r.PathValue("id") }
 	mux.HandleFunc("GET "+repo+"/pullrequests/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -525,10 +522,7 @@ func (f *fakeBitbucket) handler(t *testing.T) http.Handler {
 				out = append(out, p)
 			}
 		}
-		if n, _ := strconv.Atoi(r.URL.Query().Get("pagelen")); n < len(out) {
-			out = out[:n]
-		}
-		page(w, out)
+		writeCollectionPage(w, r, out)
 	})
 	mux.HandleFunc("GET "+repo+"/pipelines/{id}", func(w http.ResponseWriter, r *http.Request) {
 		f.pipelineGet++
