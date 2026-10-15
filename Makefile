@@ -1,7 +1,7 @@
 BINARY := bitbucket-custom-mcp
 BINDIR ?= $(HOME)/.local/bin
 
-.PHONY: build install lint test smoke release snyk osv clean
+.PHONY: build install lint test smoke release release-snapshot snyk osv clean
 
 build:
 	go build -trimpath -o bin/$(BINARY) ./cmd/server
@@ -20,7 +20,10 @@ smoke:
 	go test -count=1 ./cmd/server -run '^TestInstalledBinary$$'
 
 release:
-	bash scripts/package-release.sh
+	goreleaser release --clean --skip=publish
+
+release-snapshot:
+	goreleaser release --snapshot --clean
 
 snyk:
 	snyk test
