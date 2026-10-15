@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -442,7 +443,7 @@ func TestReadPipelineResource(t *testing.T) {
 		t.Fatalf("reading an unknown pipeline: err = %v, want resource not found", err)
 	}
 	templates, err := cs.ListResourceTemplates(context.Background(), nil)
-	if err != nil || len(templates.ResourceTemplates) != 1 || templates.ResourceTemplates[0].URITemplate != pipelineURITemplate {
+	if err != nil || len(templates.ResourceTemplates) != 2 || !slices.ContainsFunc(templates.ResourceTemplates, func(t *mcp.ResourceTemplate) bool { return t.URITemplate == pipelineURITemplate }) {
 		t.Fatalf("templates = %+v, %v", templates, err)
 	}
 	if caps := cs.InitializeResult().Capabilities; caps.Resources == nil || !caps.Resources.Subscribe {
@@ -458,7 +459,7 @@ func TestEndedPollerKeepsNewerWatch(t *testing.T) {
 	tl := &tools{log: slog.New(slog.DiscardHandler), pollInterval: time.Hour, watches: map[string]*pipelineWatch{uri: newer}}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	tl.poll(ctx, uri, &pipelineWatch{cancel: cancel}, pipelineView{})
+	tl.poll(ctx, uri, &pipelineWatch{cancel: cancel}, "")
 	if tl.watches[uri] != newer {
 		t.Fatal("the ended poller removed the watch that replaced it")
 	}

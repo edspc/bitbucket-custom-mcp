@@ -158,6 +158,8 @@ func newServer(impl *mcp.Implementation, t *tools) *mcp.Server {
 		Annotations: readOnly,
 	}, guarded(t, t.pipelineLog))
 
+	mcp.AddTool(s, &mcp.Tool{Name: "create_deployment", Title: "Create a deployment environment", Description: "Create a Bitbucket deployment environment of type Test, Staging or Production. This creates the environment, not a pipeline run.", Annotations: write}, guarded(t, t.createDeployment))
+
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_schedules",
 		Title:       "List pipeline schedules",
@@ -208,5 +210,10 @@ func newServer(impl *mcp.Implementation, t *tools) *mcp.Server {
 			"get notifications/resources/updated on every change, until the pipeline completes or pauses " +
 			"for a manual step.",
 	}, t.readPipeline)
+	s.AddResourceTemplate(&mcp.ResourceTemplate{
+		Name: "pipeline_scope", Title: "Pipelines for a branch, pull request or deployment environment",
+		URITemplate: scopeURITemplate, MIMEType: "application/json",
+		Description: "Latest 10 branch pipelines, 10 PR build statuses, or matching deployments from the latest 50 repository deployments; kind is branch, pullrequest or deployment. Selector is a percent-encoded branch name, positive PR ID or environment UUID. Subscribe for new runs and status changes for up to 24 hours.",
+	}, t.readScope)
 	return s
 }

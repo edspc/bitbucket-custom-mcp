@@ -14,10 +14,11 @@ import (
 // Policy is operator configuration, never a tool argument. Nil lists allow all within the
 // configured workspace; non-nil empty lists deny all. Ref limits apply to runs and schedules.
 type Policy struct {
-	Repositories []string
-	Projects     []string // exact project keys or UUIDs, checked against live repository metadata
-	Tools        []string
-	Refs         []string // exact "branch:<name>" or "tag:<name>" entries
+	Repositories      []string
+	Projects          []string // exact project keys or UUIDs, checked against live repository metadata
+	Tools             []string
+	ConfirmationTools []string // nil confirms writes; an explicit list confirms only these tools
+	Refs              []string // exact "branch:<name>" or "tag:<name>" entries
 }
 
 func (p Policy) checkRepo(repo string) error {
@@ -83,6 +84,38 @@ func guarded[In, Out any](t *tools, handler mcp.ToolHandlerFor[In, Out]) mcp.Too
 			var out Out
 			return nil, out, fmt.Errorf("%w; nothing changed", err)
 		}
+		if !isWriteTool(req.Params.Name) && t.policy.requiresConfirmation(req.Params.Name) {
+			page, err := t.claimSecrets(req, in)
+			if err != nil {
+				var out Out
+				return nil, out, err
+			}
+			defer page.close()
+			res, approved, err := t.confirmChange(ctx, req, in, page, in)
+			if err != nil || res != nil {
+				var out Out
+				return res, out, err
+			}
+			if !approved {
+				var out Out
+				return nil, out, errors.New("the operation was not approved")
+			}
+		}
 		return handler(ctx, req, in)
 	}
+}
+
+func (p Policy) requiresConfirmation(name string) bool {
+	if p.ConfirmationTools != nil {
+		return slices.Contains(p.ConfirmationTools, name)
+	}
+	return isWriteTool(name)
+}
+
+func isWriteTool(name string) bool {
+	switch name {
+	case "link_repos_by_key", "link_repos_by_token", "set_variable", "delete_variable", "run_pipeline", "add_schedule", "delete_schedule", "create_deployment":
+		return true
+	}
+	return false
 }

@@ -264,6 +264,13 @@ func (t *tools) runPipeline(ctx context.Context, req *mcp.CallToolRequest, in ru
 		return nil, runPipelineResult{}, err
 	}
 	r := in.request()
+	if page != nil && page.automatic {
+		commit, err := t.bb.PipelineCommit(ctx, in.Repo, r.Target.RefType, r.Target.RefName, in.Commit)
+		if err != nil {
+			return nil, runPipelineResult{}, err
+		}
+		page.page.info.Commit = commit
+	}
 	if page == nil {
 		commit, err := t.bb.PipelineCommit(ctx, in.Repo, r.Target.RefType, r.Target.RefName, in.Commit)
 		if err != nil {
@@ -287,7 +294,7 @@ func (t *tools) runPipeline(ctx context.Context, req *mcp.CallToolRequest, in ru
 		})
 		return res, runPipelineResult{}, err
 	}
-	if !accepted(req) {
+	if !accepted(req, page) {
 		return nil, runPipelineResult{Status: "cancelled", Message: "the operation was not approved; no pipeline was started"}, nil
 	}
 	values, err := t.waitSecrets(ctx, req, page)

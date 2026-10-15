@@ -19,13 +19,14 @@ func policyFromEnv() (tools.Policy, error) {
 		{"BITBUCKET_ALLOWED_PROJECTS", &policy.Projects},
 		{"BITBUCKET_ALLOWED_TOOLS", &policy.Tools},
 		{"BITBUCKET_ALLOWED_REFS", &policy.Refs},
+		{"BITBUCKET_CONFIRM_TOOLS", &policy.ConfirmationTools},
 	} {
 		value, set := os.LookupEnv(field.name)
 		if !set {
 			continue
 		}
 		if err := json.Unmarshal([]byte(value), field.list); err != nil || *field.list == nil {
-			return tools.Policy{}, fmt.Errorf("%s must be a JSON array of exact allowed names (an empty array denies all)", field.name)
+			return tools.Policy{}, fmt.Errorf("%s must be a JSON array of exact names", field.name)
 		}
 		for _, entry := range *field.list {
 			if entry == "" || strings.TrimSpace(entry) != entry {

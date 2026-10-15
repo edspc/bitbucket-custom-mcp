@@ -105,7 +105,7 @@ func (t *tools) linkByToken(ctx context.Context, req *mcp.CallToolRequest, in li
 		})
 		return res, linkByTokenResult{}, err
 	}
-	if !accepted(req) {
+	if !accepted(req, page) {
 		return nil, linkByTokenResult{statusResult: statusResult{Status: "cancelled", Message: "the user did not open the token page; nothing changed"}}, nil
 	}
 	values, err := t.waitSecrets(ctx, req, page)

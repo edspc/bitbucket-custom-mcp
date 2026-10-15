@@ -26,10 +26,10 @@ func (t *tools) confirmChange(ctx context.Context, req *mcp.CallToolRequest, in 
 		})
 		return res, false, err
 	}
-	if page.page.info.Arguments != string(args) {
+	if !page.automatic && page.page.info.Arguments != string(args) {
 		return nil, false, errors.New("the operation changed while awaiting approval; call the tool again; nothing changed")
 	}
-	if !accepted(req) {
+	if !accepted(req, page) {
 		return nil, false, nil
 	}
 	_, err = t.waitSecrets(ctx, req, page)
