@@ -59,11 +59,31 @@ func TestConfirmationToolsEnv(t *testing.T) {
 	t.Setenv("BITBUCKET_CONFIRM_TOOLS", `[]`)
 	p, err = policyFromEnv()
 	if err != nil || p.ConfirmationTools == nil || len(p.ConfirmationTools) != 0 {
-		t.Fatalf("disabled: %+v %v", p, err)
+		t.Fatalf("empty defaults: %+v %v", p, err)
 	}
 	t.Setenv("BITBUCKET_CONFIRM_TOOLS", `["run_pipeline","get_pipeline"]`)
 	p, err = policyFromEnv()
 	if err != nil || len(p.ConfirmationTools) != 2 {
 		t.Fatalf("configured: %+v %v", p, err)
+	}
+}
+
+func TestToolListsAcceptEmptyAndWildcard(t *testing.T) {
+	for _, value := range []string{`[]`, `["*"]`, `["get_pipeline","*"]`} {
+		t.Run(value, func(t *testing.T) {
+			clearPolicyEnv(t)
+			t.Setenv("BITBUCKET_ALLOWED_TOOLS", value)
+			t.Setenv("BITBUCKET_CONFIRM_TOOLS", value)
+			p, err := policyFromEnv()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Tools == nil || p.ConfirmationTools == nil {
+				t.Fatalf("lists not parsed: %+v", p)
+			}
+			if value != `[]` && (p.Tools[len(p.Tools)-1] != "*" || p.ConfirmationTools[len(p.ConfirmationTools)-1] != "*") {
+				t.Fatalf("wildcard not preserved: %+v", p)
+			}
+		})
 	}
 }

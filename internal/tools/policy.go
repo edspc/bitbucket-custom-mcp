@@ -11,13 +11,14 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Policy is operator configuration, never a tool argument. Nil lists allow all within the
-// configured workspace; non-nil empty lists deny all. Ref limits apply to runs and schedules.
+// Policy is operator configuration, never a tool argument. Repository, project and ref
+// lists allow all when nil and deny all when empty. Tool lists use defaults when empty
+// and accept "*" for every tool. Ref limits apply to runs and schedules.
 type Policy struct {
 	Repositories      []string
 	Projects          []string // exact project keys or UUIDs, checked against live repository metadata
-	Tools             []string
-	ConfirmationTools []string // nil confirms writes; an explicit list confirms only these tools
+	Tools             []string // empty allows all; otherwise exact names or "*"
+	ConfirmationTools []string // empty confirms writes; otherwise exact names or "*"
 	Refs              []string // exact "branch:<name>" or "tag:<name>" entries
 }
 
@@ -39,7 +40,7 @@ func (p Policy) checkRef(kind, name string) error {
 }
 
 func (p Policy) check(name string, in any) error {
-	if p.Tools != nil && !slices.Contains(p.Tools, name) {
+	if len(p.Tools) > 0 && !slices.Contains(p.Tools, "*") && !slices.Contains(p.Tools, name) {
 		return errors.New("tool is not allowed by the server policy")
 	}
 	data, err := json.Marshal(in)
@@ -106,8 +107,8 @@ func guarded[In, Out any](t *tools, handler mcp.ToolHandlerFor[In, Out]) mcp.Too
 }
 
 func (p Policy) requiresConfirmation(name string) bool {
-	if p.ConfirmationTools != nil {
-		return slices.Contains(p.ConfirmationTools, name)
+	if len(p.ConfirmationTools) > 0 {
+		return slices.Contains(p.ConfirmationTools, "*") || slices.Contains(p.ConfirmationTools, name)
 	}
 	return isWriteTool(name)
 }

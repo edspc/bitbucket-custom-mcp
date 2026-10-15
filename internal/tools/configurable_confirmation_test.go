@@ -10,7 +10,7 @@ import (
 
 func TestConfirmationPolicyAllowsWritesWithoutElicitation(t *testing.T) {
 	f := newFake()
-	s := newTestServer(t, f, Policy{ConfirmationTools: []string{}})
+	s := newTestServer(t, f, Policy{ConfirmationTools: []string{"delete_variable"}})
 	cs := connectClient(t, s, clientOptions(nil), "")
 	mustCall(t, cs, "set_variable", map[string]any{"scope": "repository", "repo": "repo-a", "name": "PLAIN", "value": "value"})
 	mustCall(t, cs, "run_pipeline", map[string]any{"repo": "repo-a", "branch": "main"})
@@ -31,7 +31,7 @@ func TestConfirmationPolicyAllowsWritesWithoutElicitation(t *testing.T) {
 
 func TestConfirmationPolicyNeverBypassesSecretsOrAccessLimits(t *testing.T) {
 	f := newFake()
-	cs := connectClient(t, newTestServer(t, f, Policy{ConfirmationTools: []string{}, Repositories: []string{"repo-a"}}), clientOptions(nil), "")
+	cs := connectClient(t, newTestServer(t, f, Policy{ConfirmationTools: []string{"delete_variable"}, Repositories: []string{"repo-a"}}), clientOptions(nil), "")
 	for _, args := range []map[string]any{
 		{"scope": "repository", "repo": "repo-a", "name": "SECRET", "secured": true},
 		{"scope": "repository", "repo": "repo-b", "name": "PLAIN", "value": "value"},
@@ -78,5 +78,34 @@ func TestSelectedReadConfirmation(t *testing.T) {
 	_, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "list_pipelines", Arguments: map[string]any{"repo": "repo-a"}})
 	if err != nil || !f.pages.served() {
 		t.Fatalf("read confirmation: %v", err)
+	}
+}
+
+func TestEmptyToolListsKeepDefaults(t *testing.T) {
+	f := newFake()
+	cs := connectClient(t, newTestServer(t, f, Policy{Tools: []string{}, ConfirmationTools: []string{}}), clientOptions(nil), "")
+	mustCall(t, cs, "list_pipelines", map[string]any{"repo": "repo-a"})
+	out, failed := call(t, cs, "set_variable", map[string]any{"scope": "repository", "repo": "repo-a", "name": "PLAIN", "value": "value"})
+	if !failed || !strings.Contains(out, "URL elicitation") || len(f.mutationList()) != 0 {
+		t.Fatalf("empty confirmation list bypassed write approval: %s", out)
+	}
+}
+
+func TestWildcardConfirmsReadsAndWrites(t *testing.T) {
+	f := newFake()
+	cs := connectClient(t, newTestServer(t, f, Policy{Tools: []string{"*"}, ConfirmationTools: []string{"*"}}), clientOptions(nil), "")
+	for _, name := range []string{"list_pipelines", "create_deployment"} {
+		args := map[string]any{"repo": "repo-a"}
+		if name == "create_deployment" {
+			args["name"] = "Preview"
+			args["environment_type"] = "Test"
+		}
+		out, failed := call(t, cs, name, args)
+		if !failed || !strings.Contains(out, "URL elicitation") {
+			t.Fatalf("wildcard omitted confirmation for %s: %s", name, out)
+		}
+	}
+	if len(f.mutationList()) != 0 {
+		t.Fatal("unapproved change")
 	}
 }
