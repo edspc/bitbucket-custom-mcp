@@ -70,6 +70,14 @@ func newServer(impl *mcp.Implementation, t *tools) *mcp.Server {
 	write := &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: new(true)}
 
 	mcp.AddTool(s, &mcp.Tool{
+		Name:  "search_repositories",
+		Title: "Search repositories",
+		Description: "Find repositories of the workspace by a part of their name, optionally in one project, among " +
+			"those the server policy allows, a page at a time: pass next_page back as page for more. Returns " +
+			"each repository's slug, which the repo input of the other tools takes.",
+		Annotations: readOnly,
+	}, guarded(t, t.searchRepositories))
+	mcp.AddTool(s, &mcp.Tool{
 		Name:        "get_uuid",
 		Title:       "Get a repository or deployment environment UUID",
 		Description: "Return the UUID of repo, or of its deployment environment when environment is supplied, exactly as Bitbucket returns it, including braces and letter case.",

@@ -212,6 +212,11 @@ func (c *Client) get(ctx context.Context, rawURL string, auth func(*http.Request
 	if err := c.checkProjectURL(ctx, rawURL); err != nil {
 		return nil, err
 	}
+	return c.getUnchecked(ctx, rawURL, auth, header)
+}
+
+// getUnchecked is get without the project check, for listings that name no repository.
+func (c *Client) getUnchecked(ctx context.Context, rawURL string, auth func(*http.Request), header http.Header) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err

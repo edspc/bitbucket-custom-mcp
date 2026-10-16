@@ -61,6 +61,8 @@ type fakeBitbucket struct {
 	diffQueries       []string                            // queries of the diff requests
 	prRequests        []string                            // pull request requests, by what they ask for
 	prListQueries     []string                            // queries of the pull request list requests
+	repositories      []bitbucket.Repository              // the workspace listing, which ignores q
+	repoListQueries   []string                            // queries of the workspace repository listings
 	diffStatus        int                                 // a failure the diff answers with
 	diffstatStatus    int                                 // a failure the diffstat answers with
 	mergeDiff         bool                                // merged PR redirects use the merge commit
@@ -432,6 +434,11 @@ func (f *fakeBitbucket) handler(t *testing.T) http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
+	// It answers every listing in full, so tools must drop what the policy does not allow.
+	mux.HandleFunc("GET /2.0/repositories/ws", func(w http.ResponseWriter, r *http.Request) {
+		f.repoListQueries = append(f.repoListQueries, r.URL.RawQuery)
+		writeCollectionPage(w, r, f.repositories)
+	})
 	mux.HandleFunc("GET "+repo+"/pullrequests", func(w http.ResponseWriter, r *http.Request) {
 		f.prListQueries = append(f.prListQueries, r.URL.RawQuery)
 		q := r.URL.Query()

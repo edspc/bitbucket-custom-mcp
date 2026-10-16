@@ -27,6 +27,16 @@ type apiPage[T any] struct {
 
 // readPage never follows next. Callers choose a bounded number of pages to read.
 func readPage[T any](ctx context.Context, c *Client, rawURL string, limit int) (apiPage[T], error) {
+	if err := c.checkProjectURL(ctx, rawURL); err != nil {
+		return apiPage[T]{}, err
+	}
+	return readWorkspacePage[T](ctx, c, rawURL, limit)
+}
+
+// readWorkspacePage reads a page of a workspace-wide listing without the project check, which
+// needs one repository in the URL: the caller must narrow the request and keep only the values
+// the server policy allows.
+func readWorkspacePage[T any](ctx context.Context, c *Client, rawURL string, limit int) (apiPage[T], error) {
 	var page apiPage[T]
 	if !inAPI(rawURL) {
 		return page, fmt.Errorf("unexpected pagination link outside the Bitbucket API")
@@ -35,7 +45,7 @@ func readPage[T any](ctx context.Context, c *Client, rawURL string, limit int) (
 	if err != nil {
 		return page, err
 	}
-	resp, err := c.get(ctx, rawURL, c.basicAuth, nil)
+	resp, err := c.getUnchecked(ctx, rawURL, c.basicAuth, nil)
 	if err != nil {
 		return page, fmt.Errorf("reading Bitbucket page: %w", err)
 	}
