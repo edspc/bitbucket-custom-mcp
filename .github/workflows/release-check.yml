@@ -1,0 +1,72 @@
+name: Release check
+
+# Runs the release tooling as the Release workflow and GoReleaser would, without committing or
+# publishing anything, on pull requests that change how releases are made: the release tools
+# come from go-release-actions, whose tests do not cover how this repository calls them.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - .github/workflows/release-check.yml
+      - .goreleaser.yaml
+
+permissions:
+  contents: read
+
+jobs:
+  release-dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # The GoReleaser and bump steps below stand in for those of release.yml, and the GoReleaser
+      # hook runs the bump action's command, so a change to one of them must reach the others:
+      # otherwise this check would pass while testing something other than what releases.
+      - name: Check the steps match release.yml
+        run: |
+          for line in 'uses: goreleaser/goreleaser-action@' '^ +version: ' 'uses: edspc/go-release-actions/bump@' '^ +file: ' '^ +replace: '; do
+            expected=$(grep -m1 -E "$line" .github/workflows/release.yml)
+            if ! grep -qxF -- "$expected" .github/workflows/release-check.yml; then
+              echo "release-check.yml lacks this line of release.yml: $expected" >&2
+              exit 1
+            fi
+          done
+          pin=$(grep -o 'edspc/go-release-actions/bump@[0-9a-f]\{40\}' .github/workflows/release.yml)
+          grep -qF "github.com/edspc/go-release-actions/cmd/release@${pin#*@}" .goreleaser.yaml
+      - name: Build archives without publishing
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7
+        with:
+          distribution: goreleaser
+          version: v2.18.3
+          args: release --snapshot --clean
+      - name: Check license notices in the archives
+        run: |
+          for archive in dist/*-darwin-*.tar.gz dist/*-linux-*.tar.gz; do
+            tar -tzf "$archive" > "$RUNNER_TEMP/files"
+            grep -qx 'THIRD_PARTY_LICENSES/go/LICENSE' "$RUNNER_TEMP/files"
+            grep -q '^THIRD_PARTY_LICENSES/github.com/modelcontextprotocol/go-sdk@v[^/]*/LICENSE$' "$RUNNER_TEMP/files"
+          done
+      - name: Raise version as a release would
+        id: version
+        uses: edspc/go-release-actions/bump@4d219be614b16a36b69a05c1f6bfdd031857e27c # main
+        with:
+          part: patch
+          file: cmd/server/cli.go
+          replace: README.md
+      - name: Check the raised version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          old=$(git show HEAD:cmd/server/cli.go | sed -n 's/^const version = "\(.*\)"$/\1/p')
+          IFS=. read -r major minor patch <<< "$old"
+          test "$VERSION" = "$major.$minor.$((patch + 1))"
+          grep -qx "const version = \"$VERSION\"" cmd/server/cli.go
+          if git diff --quiet -- README.md; then
+            echo 'README.md kept the old version.' >&2
+            exit 1
+          fi

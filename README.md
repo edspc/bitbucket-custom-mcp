@@ -56,6 +56,14 @@ Actions are pinned by commit, the image by digest and the Snyk CLI by its
 SHA-256, and checkouts keep no credentials. The Snyk job reads the token from the
 repository secret `SNYK_TOKEN`.
 
+Pull requests that change `.github/workflows/release.yml`, `.goreleaser.yaml` or
+the check itself also run the Release check workflow
+(`.github/workflows/release-check.yml`). Without committing or publishing, it
+builds snapshot archives with GoReleaser, which runs the release hook, checks
+the license notices in them, and raises the version with the pinned bump action.
+It first checks that its GoReleaser and bump steps match those of the Release
+workflow, and that the hook uses the same go-release-actions commit.
+
 ## CLI and Homebrew packaging
 
 `bitbucket-custom-mcp --version` prints `bitbucket-custom-mcp 0.4.3` and exits.
@@ -122,19 +130,23 @@ GitHub Actions installs the pinned version through the GoReleaser action.
 GoReleaser reads the version from the Git tag (`vMAJOR.MINOR.PATCH`). The tag
 must match the version committed in `cmd/server/cli.go`, so binaries and installs
 built from a source archive report the same version. A pre-release hook checks
-this match and gathers the Go and module license notices.
+this match and gathers the Go and module license notices with the `notices`
+command of [go-release-actions](https://github.com/edspc/go-release-actions),
+which the workflow also uses to raise the version; both are pinned by commit.
 
-Run the **Release** workflow manually on the branch to release and supply
-`version` as `MAJOR.MINOR.PATCH` without `v`, for example `0.5.0`. It must be
-strictly greater than the current source version. The workflow updates the
-executable version and README examples, tests the result, commits the version,
-and atomically pushes the commit and annotated `v<version>` tag. GoReleaser then
-builds and publishes the GitHub Release, including its changelog and assets.
+Run the **Release** workflow manually on the branch to release and choose
+`bump`, the part of the version to increase: `patch` (the default), `minor` or
+`major`. The parts after it reset to zero, so `minor` turns `X.Y.Z` into
+`X.(Y+1).0`. The workflow computes the version from the one committed in
+`cmd/server/cli.go`, updates the executable version and README examples, tests
+the result, commits the version, and atomically pushes the commit and annotated
+`v<version>` tag. GoReleaser then builds and publishes the GitHub Release,
+including its changelog and assets.
 Existing tags or releases are refused. The workflow needs permission to push to
 the selected branch; branch protection can reject the atomic push without
 creating a tag. If GoReleaser fails after the push, the commit and tag remain:
-recover the release from that existing tag instead of dispatching the same
-version again. The workflow does not change the Homebrew tap.
+recover the release from that existing tag instead of dispatching the workflow
+again. The workflow does not change the Homebrew tap.
 
 For local release packaging, check out a clean commit tagged with its executable
 version, then run `make release`. This validates the release and creates the

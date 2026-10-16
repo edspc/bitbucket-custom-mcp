@@ -3,10 +3,15 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: 'New stable version, without v (for example 0.5.0)'
+      bump:
+        description: 'Version part to increase; the parts after it reset to 0'
         required: true
-        type: string
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
 
 permissions:
   contents: read
@@ -29,14 +34,20 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - name: Prepare version
+      - name: Raise version
+        id: version
+        uses: edspc/go-release-actions/bump@4d219be614b16a36b69a05c1f6bfdd031857e27c # main
+        with:
+          part: ${{ inputs.bump }}
+          file: cmd/server/cli.go
+          replace: README.md
+      - name: Check version is new
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_BUMP: ${{ inputs.bump }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          python3 -B -m unittest discover -s scripts -p '*_test.py'
-          python3 -B scripts/prepare_release.py "$RELEASE_VERSION"
           if git show-ref --verify --quiet "refs/tags/v$RELEASE_VERSION"; then
             echo 'The release tag already exists.' >&2
             exit 1
@@ -47,11 +58,12 @@ jobs:
             echo 'The release already exists.' >&2
             exit 1
           fi
+          echo "Releasing v$RELEASE_VERSION ($RELEASE_BUMP)" >> "$GITHUB_STEP_SUMMARY"
       - name: Test
         run: make test
       - name: Commit version and tag locally
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -61,7 +73,7 @@ jobs:
       - name: Push version commit and tag
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
           auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
