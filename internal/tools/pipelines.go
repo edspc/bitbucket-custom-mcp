@@ -29,6 +29,7 @@ type pipelineView struct {
 	Ref          string     `json:"ref,omitempty" jsonschema:"what was built, such as 'branch main'"`
 	Commit       string     `json:"commit,omitempty"`
 	Definition   string     `json:"definition,omitempty" jsonschema:"the pipeline definition from bitbucket-pipelines.yml, such as 'custom: deploy' or 'branches: main'"`
+	Trigger      string     `json:"trigger,omitempty" jsonschema:"how it started: push, manual (by someone, in Bitbucket or through the API), scheduled, or parent_step for a child pipeline a step started"`
 	Creator      string     `json:"creator,omitempty"`
 	CreatedOn    string     `json:"created_on,omitempty"`
 	CompletedOn  string     `json:"completed_on,omitempty"`
@@ -55,6 +56,7 @@ func (t *tools) viewPipeline(repo string, p bitbucket.Pipeline, steps []bitbucke
 		Error:        p.State.ErrorMessage(),
 		Finished:     p.State.Completed(),
 		Creator:      p.Creator.DisplayName,
+		Trigger:      strings.ToLower(p.Trigger.Name),
 		CreatedOn:    p.CreatedOn,
 		CompletedOn:  p.CompletedOn,
 		URL:          t.bb.PipelineURL(repo, p.BuildNumber),
@@ -161,16 +163,54 @@ func (t *tools) getPipeline(ctx context.Context, _ *mcp.CallToolRequest, in pipe
 }
 
 type listPipelinesInput struct {
-	Repo   string `json:"repo" jsonschema:"repository slug"`
-	Branch string `json:"branch,omitempty" jsonschema:"only pipelines that built this branch"`
-	Limit  int    `json:"limit,omitempty" jsonschema:"how many pipelines a page holds; 10 when omitted, at most 50"`
-	Page   int    `json:"page,omitempty" jsonschema:"page to return, from 1 for the latest pipelines; 1 when omitted. Pass next_page of the previous result, with the same branch and limit"`
+	Repo       string `json:"repo" jsonschema:"repository slug"`
+	Branch     string `json:"branch,omitempty" jsonschema:"only pipelines that built this branch"`
+	RefType    string `json:"ref_type,omitempty" jsonschema:"only pipelines that built a branch, a lightweight tag (tag) or an annotated tag (annotated_tag)"`
+	Commit     string `json:"commit,omitempty" jsonschema:"only pipelines that built this commit, given by its full 40-character hash"`
+	Definition string `json:"definition,omitempty" jsonschema:"only pipelines of this part of bitbucket-pipelines.yml, written as results show it: 'custom', 'branches', 'tags', 'pull-requests' or 'default', and for all but 'default' optionally a name or pattern after a colon, such as 'custom: deploy' or 'branches: main'"`
+	Trigger    string `json:"trigger,omitempty" jsonschema:"only pipelines started this way: push, manual (by someone, in Bitbucket or through the API) or scheduled"`
+	Limit      int    `json:"limit,omitempty" jsonschema:"how many pipelines a page holds; 10 when omitted, at most 50"`
+	Page       int    `json:"page,omitempty" jsonschema:"page to return, from 1 for the latest pipelines; 1 when omitted. Pass next_page of the previous result, with the same filters and limit"`
+}
+
+// filter checks the filters before any request, so a mistyped one is named in the error, and
+// writes them as the pipelines API takes them.
+func (in listPipelinesInput) filter() (bitbucket.PipelineFilter, error) {
+	f := bitbucket.PipelineFilter{Branch: in.Branch}
+	switch in.RefType {
+	case "":
+	case "branch", "tag", "annotated_tag":
+		f.RefType = strings.ToUpper(in.RefType)
+	default:
+		return f, fmt.Errorf("ref_type must be branch, tag or annotated_tag, got %q", in.RefType)
+	}
+	if in.Commit != "" {
+		if len(in.Commit) != 40 || strings.Trim(in.Commit, "0123456789abcdefABCDEF") != "" {
+			return f, fmt.Errorf("commit must be a full 40-character hash, got %q", in.Commit)
+		}
+		f.Commit = strings.ToLower(in.Commit)
+	}
+	if in.Definition != "" {
+		section, pattern, ok := splitDefinition(in.Definition)
+		if !ok {
+			return f, fmt.Errorf("definition must be 'custom', 'branches', 'tags', 'pull-requests' or 'default', optionally with ': <name>' after all but 'default', got %q", in.Definition)
+		}
+		f.SelectorType, f.Pattern = apiSection(section), pattern
+	}
+	switch in.Trigger {
+	case "":
+	case "push", "manual", "scheduled":
+		f.Trigger = strings.ToUpper(in.Trigger)
+	default:
+		return f, fmt.Errorf("trigger must be push, manual or scheduled, got %q", in.Trigger)
+	}
+	return f, nil
 }
 
 type listPipelinesResult struct {
 	Pipelines []pipelineView `json:"pipelines" jsonschema:"newest first, without steps"`
 	NextPage  int            `json:"next_page,omitempty" jsonschema:"page with the older pipelines, passed back as page; omitted on the last page"`
-	Total     *int           `json:"total,omitempty" jsonschema:"how many pipelines there are in all, on branch when it is set, when Bitbucket reports it"`
+	Total     *int           `json:"total,omitempty" jsonschema:"how many pipelines the filters pick in all, when Bitbucket reports it"`
 }
 
 func (t *tools) listPipelines(ctx context.Context, _ *mcp.CallToolRequest, in listPipelinesInput) (*mcp.CallToolResult, listPipelinesResult, error) {
@@ -185,7 +225,11 @@ func (t *tools) listPipelines(ctx context.Context, _ *mcp.CallToolRequest, in li
 	if err != nil {
 		return nil, listPipelinesResult{}, err
 	}
-	ps, err := t.bb.ListPipelines(ctx, in.Repo, in.Branch, page, limit)
+	filter, err := in.filter()
+	if err != nil {
+		return nil, listPipelinesResult{}, err
+	}
+	ps, err := t.bb.ListPipelines(ctx, in.Repo, filter, page, limit)
 	if err != nil {
 		return nil, listPipelinesResult{}, err
 	}

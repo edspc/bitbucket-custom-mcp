@@ -70,7 +70,7 @@ func (t *tools) scopeSnapshot(ctx context.Context, uri string) (string, error) {
 	var data any
 	switch kind {
 	case "branch":
-		ps, err := t.bb.ListPipelines(ctx, repo, selector, 1, defaultListLimit)
+		ps, err := t.bb.ListPipelines(ctx, repo, bitbucket.PipelineFilter{Branch: selector}, 1, defaultListLimit)
 		if err != nil {
 			return "", err
 		}

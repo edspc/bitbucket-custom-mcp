@@ -112,3 +112,23 @@ func TestListAndDeleteSchedules(t *testing.T) {
 		t.Fatalf("schedules of a repository without any = %+v", res.Schedules)
 	}
 }
+
+// Schedules take the definitions a pipeline can be run by: a custom or branch pipeline by name or
+// pattern, or the default one, written the way results show them.
+func TestParseDefinition(t *testing.T) {
+	for s, want := range map[string]*bitbucket.Selector{
+		"custom: nightly":  {Type: "custom", Pattern: "nightly"},
+		" branches : main": {Type: "branches", Pattern: "main"},
+		"default":          {Type: "default"},
+		" default ":        {Type: "default"},
+	} {
+		if got, err := parseDefinition(s); err != nil || *got != *want {
+			t.Errorf("parseDefinition(%q) = %+v, %v; want %+v", s, got, err, want)
+		}
+	}
+	for _, s := range []string{"custom", "custom:", "branches", "tags: v*", "pull-requests: **", "default:", "default: x", "nightly", ""} {
+		if got, err := parseDefinition(s); err == nil {
+			t.Errorf("parseDefinition(%q) = %+v, want an error", s, got)
+		}
+	}
+}
