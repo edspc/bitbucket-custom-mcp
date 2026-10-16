@@ -131,8 +131,10 @@ func newServer(impl *mcp.Implementation, t *tools) *mcp.Server {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:  "list_pipelines",
 		Title: "List pipelines",
-		Description: "List the pipelines of a repository, newest first, optionally on one branch, a page at a time: " +
-			"pass next_page back as page, with the same branch and limit, for older ones.",
+		Description: "List the pipelines of a repository, newest first, a page at a time: pass next_page back as " +
+			"page, with the same filters and limit, for older ones. Filters pick pipelines of a branch, a ref type " +
+			"or a commit, of a part of bitbucket-pipelines.yml such as 'custom: deploy', or started by push, " +
+			"manually or by a schedule.",
 		Annotations: readOnly,
 	}, guarded(t, t.listPipelines))
 	mcp.AddTool(s, &mcp.Tool{

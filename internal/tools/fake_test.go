@@ -517,8 +517,19 @@ func (f *fakeBitbucket) handler(t *testing.T) http.Handler {
 	mux.HandleFunc("GET "+repo+"/pipelines/{$}", func(w http.ResponseWriter, r *http.Request) {
 		f.listQueries = append(f.listQueries, r.URL.RawQuery)
 		var out []*bitbucket.Pipeline
+		q := r.URL.Query()
 		for _, p := range slices.Backward(f.runs[r.PathValue("repo")]) {
-			if b := r.URL.Query().Get("target.branch"); b == "" || p.Target.RefName == b {
+			selector := bitbucket.Selector{}
+			if p.Target.Selector != nil {
+				selector = *p.Target.Selector
+			}
+			commit := ""
+			if p.Target.Commit != nil {
+				commit = p.Target.Commit.Hash
+			}
+			if picks := func(name, value string) bool { return q.Get(name) == "" || q.Get(name) == value }; picks("target.branch", p.Target.RefName) && picks("target.ref_type", strings.ToUpper(p.Target.RefType)) &&
+				picks("target.commit.hash", commit) && picks("target.selector.type", apiSection(selector.Type)) &&
+				picks("target.selector.pattern", selector.Pattern) && picks("trigger_type", p.Trigger.Name) {
 				out = append(out, p)
 			}
 		}

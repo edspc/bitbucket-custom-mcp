@@ -17,6 +17,9 @@ type Pipeline struct {
 	CreatedOn   string         `json:"created_on"`
 	CompletedOn string         `json:"completed_on"`
 	Creator     Account        `json:"creator"`
+	Trigger     struct {
+		Name string `json:"name"` // PUSH, MANUAL, SCHEDULED or PARENT_STEP
+	} `json:"trigger"`
 }
 
 // Account is a user as other objects refer to them.
@@ -135,12 +138,28 @@ func (c *Client) RunPipeline(ctx context.Context, repo string, r RunRequest) (Pi
 	return p, err
 }
 
-// ListPipelines returns page number page, from 1, of the pipelines of repo, limit a page, newest
-// first, on branch if set.
-func (c *Client) ListPipelines(ctx context.Context, repo, branch string, page, limit int) (Page[Pipeline], error) {
+// PipelineFilter picks the pipelines to list; an empty field picks any. Values are written the
+// way the pipelines API filters them, in upper case.
+type PipelineFilter struct {
+	Branch       string
+	RefType      string // BRANCH, TAG or ANNOTATED_TAG
+	Commit       string
+	SelectorType string // CUSTOM, BRANCH, TAG, PULLREQUESTS or DEFAULT: the section of bitbucket-pipelines.yml
+	Pattern      string // the definition's name or pattern in that section
+	Trigger      string // PUSH, MANUAL or SCHEDULED
+}
+
+// ListPipelines returns page number page, from 1, of the pipelines of repo that f picks, limit a
+// page, newest first.
+func (c *Client) ListPipelines(ctx context.Context, repo string, f PipelineFilter, page, limit int) (Page[Pipeline], error) {
 	q := url.Values{"sort": {"-created_on"}, "pagelen": {strconv.Itoa(limit)}, "page": {strconv.Itoa(page)}}
-	if branch != "" {
-		q.Set("target.branch", branch)
+	for name, value := range map[string]string{
+		"target.branch": f.Branch, "target.ref_type": f.RefType, "target.commit.hash": f.Commit,
+		"target.selector.type": f.SelectorType, "target.selector.pattern": f.Pattern, "trigger_type": f.Trigger,
+	} {
+		if value != "" {
+			q.Set(name, value)
+		}
 	}
 	p, err := readPage[Pipeline](ctx, c, APIURL+c.pipelinesPath(repo)+"?"+q.Encode(), limit)
 	return Page[Pipeline]{Values: p.Values, Total: p.Size, More: p.Next != ""}, err

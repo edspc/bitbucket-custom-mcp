@@ -399,11 +399,23 @@ bitbucket.org and its `resource_uri`.
 #### `list_pipelines`, `get_pipeline`
 
 `list_pipelines` returns the pipelines of `repo`, newest first, a page at a
-time (`limit` a page, 10 by default and at most 50; `branch` to filter).
-`page`, 1 by default, picks the page; `next_page` in the result is passed back
-as `page`, with the same `branch` and `limit`, for older pipelines, and is
-omitted on the last page. `total` counts the pipelines of `repo`, or of
-`branch` when set, when Bitbucket reports it.
+time (`limit` a page, 10 by default and at most 50). Filters, which can be
+combined, keep the pipelines:
+
+| Filter | Keeps pipelines |
+|--------|-----------------|
+| `branch` | that built this branch |
+| `ref_type` | that built a `branch`, a lightweight `tag` or an `annotated_tag` |
+| `commit` | that built this commit, by its full 40-character hash |
+| `definition` | of a part of `bitbucket-pipelines.yml`, written as results show it: `custom`, `branches`, `tags`, `pull-requests` or `default`, and for all but `default` optionally a name or pattern, such as `custom: deploy` or `branches: main` |
+| `trigger` | started by a `push`, `manual`ly (in Bitbucket or through the API) or `scheduled` |
+
+Each pipeline also shows its `trigger`: `push`, `manual`, `scheduled`, or
+`parent_step` for a child pipeline a step started. Filter values are checked
+before any request, so a mistyped one is named in the error. `page`, 1 by default, picks the page;
+`next_page` in the result is passed back as `page`, with the same filters and
+`limit`, for older pipelines, and is omitted on the last page. `total` counts
+the pipelines the filters keep when Bitbucket reports it.
 Pages are counted from the newest pipeline, so a run started between two calls
 moves the next page by one and repeats a pipeline. A call costs one API
 request. `get_pipeline`

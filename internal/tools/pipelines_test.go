@@ -2,6 +2,7 @@ package tools
 
 import (
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -152,6 +153,109 @@ func TestListPipelinesNewestFirst(t *testing.T) {
 	}
 	if out, isErr := call(t, cs, "list_pipelines", map[string]any{"repo": "repo-a", "page": -1}); !isErr || !strings.Contains(out, "page must be 1 or more") {
 		t.Fatalf("page -1 = %s (error %v)", out, isErr)
+	}
+}
+
+func TestListPipelinesFilters(t *testing.T) {
+	const commit = "ABCDEF0123456789abcdef0123456789abcdef01"
+	f := newFake()
+	f.mu.Lock()
+	for _, run := range []struct {
+		refType, ref, section, pattern, trigger, commit string
+	}{
+		{"branch", "main", "branches", "main", "PUSH", ""},                        // 1
+		{"branch", "main", "custom", "deploy", "MANUAL", strings.ToLower(commit)}, // 2
+		{"tag", "v1", "tags", "v*", "PUSH", ""},                                   // 3
+		{"branch", "dev", "custom", "nightly", "SCHEDULED", ""},                   // 4
+		{"branch", "dev", "default", "", "PUSH", ""},                              // 5
+		{"annotated_tag", "v2", "tags", "v*", "MANUAL", ""},                       // 6
+	} {
+		target := bitbucket.RefTarget(run.refType, run.ref, run.commit)
+		target.Selector = &bitbucket.Selector{Type: run.section, Pattern: run.pattern}
+		p := f.addRunLocked("repo-a", completed("SUCCESSFUL"), target, nil)
+		p.Trigger.Name = run.trigger
+	}
+	f.mu.Unlock()
+	cs := connect(t, f, nil)
+
+	for name, tc := range map[string]struct {
+		args  map[string]any
+		want  []int
+		query string
+	}{
+		"custom section":     {map[string]any{"definition": "custom"}, []int{4, 2}, "target.selector.type=CUSTOM"},
+		"custom by name":     {map[string]any{"definition": " custom : deploy "}, []int{2}, "target.selector.pattern=deploy&target.selector.type=CUSTOM"},
+		"branch definitions": {map[string]any{"definition": "branches: main"}, []int{1}, "target.selector.pattern=main&target.selector.type=BRANCH"},
+		"pull requests":      {map[string]any{"definition": "pull-requests"}, nil, "target.selector.type=PULLREQUESTS"},
+		"default":            {map[string]any{"definition": "default"}, []int{5}, "target.selector.type=DEFAULT"},
+		"scheduled":          {map[string]any{"trigger": "scheduled"}, []int{4}, "trigger_type=SCHEDULED"},
+		"manual":             {map[string]any{"trigger": "manual"}, []int{6, 2}, "trigger_type=MANUAL"},
+		"tags":               {map[string]any{"ref_type": "tag"}, []int{3}, "target.ref_type=TAG"},
+		"annotated tags":     {map[string]any{"ref_type": "annotated_tag"}, []int{6}, "target.ref_type=ANNOTATED_TAG"},
+		"tag definitions":    {map[string]any{"definition": "tags"}, []int{6, 3}, "target.selector.type=TAG"},
+		"commit":             {map[string]any{"commit": commit}, []int{2}, "target.commit.hash=" + strings.ToLower(commit)},
+		"combined":           {map[string]any{"branch": "dev", "ref_type": "branch", "trigger": "push"}, []int{5}, "target.branch=dev&target.ref_type=BRANCH&trigger_type=PUSH"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f.mu.Lock()
+			f.listQueries = nil
+			f.mu.Unlock()
+			tc.args["repo"] = "repo-a"
+			res := decodeResult[listPipelinesResult](t, mustCall(t, cs, "list_pipelines", tc.args))
+			var got []int
+			for _, p := range res.Pipelines {
+				got = append(got, p.BuildNumber)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("pipelines = %v, want %v", got, tc.want)
+			}
+			f.mu.Lock()
+			queries := slices.Clone(f.listQueries)
+			f.mu.Unlock()
+			if want := "page=1&pagelen=10&sort=-created_on&" + tc.query; len(queries) != 1 || !sameQuery(queries[0], want) {
+				t.Fatalf("query = %q, want %q", queries, want)
+			}
+		})
+	}
+	res := decodeResult[listPipelinesResult](t, mustCall(t, cs, "list_pipelines", map[string]any{"repo": "repo-a", "definition": "custom: nightly"}))
+	if len(res.Pipelines) != 1 || res.Pipelines[0].Trigger != "scheduled" || res.Pipelines[0].Definition != "custom: nightly" {
+		t.Fatalf("pipeline = %+v", res.Pipelines)
+	}
+}
+
+// sameQuery compares URL queries regardless of the order of their parameters.
+func sameQuery(a, b string) bool {
+	qa, errA := url.ParseQuery(a)
+	qb, errB := url.ParseQuery(b)
+	return errA == nil && errB == nil && reflect.DeepEqual(qa, qb)
+}
+
+func TestListPipelinesRefusesBadFilters(t *testing.T) {
+	for name, tc := range map[string]struct {
+		args map[string]any
+		want string
+	}{
+		"unknown ref type":      {map[string]any{"ref_type": "commit"}, "ref_type must be branch, tag or annotated_tag"},
+		"colon without a name":  {map[string]any{"definition": "custom:"}, "definition must be"},
+		"short commit":          {map[string]any{"commit": "abcdef0"}, "full 40-character hash"},
+		"not a commit":          {map[string]any{"commit": strings.Repeat("z", 40)}, "full 40-character hash"},
+		"unknown section":       {map[string]any{"definition": "bookmarks"}, "definition must be"},
+		"section in upper case": {map[string]any{"definition": "CUSTOM"}, "definition must be"},
+		"default with a name":   {map[string]any{"definition": "default: x"}, "definition must be"},
+		"unknown trigger":       {map[string]any{"trigger": "schedule"}, "trigger must be push, manual or scheduled"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake()
+			tc.args["repo"] = "repo-a"
+			if out, isErr := call(t, connect(t, f, nil), "list_pipelines", tc.args); !isErr || !strings.Contains(out, tc.want) {
+				t.Fatalf("result = %s (error %v), want %q", out, isErr, tc.want)
+			}
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if len(f.listQueries) != 0 {
+				t.Fatalf("listed although the filter was refused: %q", f.listQueries)
+			}
+		})
 	}
 }
 

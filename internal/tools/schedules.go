@@ -69,17 +69,29 @@ type addScheduleInput struct {
 	Cron     string `json:"cron" jsonschema:"when to run: a cron pattern in UTC with 7 fields, seconds minutes hours day-of-month month day-of-week year; '0 0 2 * * ? *' runs at 02:00 UTC every day, '0 30 6 ? * MON-FRI *' at 06:30 UTC on weekdays"`
 }
 
-// parseDefinition reads a pipeline definition written the way pipeline results show it.
+// apiSection names a section of bitbucket-pipelines.yml, as pipeline results write it, the way
+// the pipelines API filters by it; it is empty for anything else.
+func apiSection(section string) string {
+	return map[string]string{"custom": "CUSTOM", "branches": "BRANCH", "tags": "TAG", "pull-requests": "PULLREQUESTS", "default": "DEFAULT"}[section]
+}
+
+// splitDefinition reads a pipeline definition written the way pipeline results show it: a
+// section, then for all but default optionally a colon and a name or pattern.
+func splitDefinition(s string) (section, pattern string, ok bool) {
+	section, pattern, colon := strings.Cut(s, ":")
+	section, pattern = strings.TrimSpace(section), strings.TrimSpace(pattern)
+	ok = apiSection(section) != "" && (!colon || pattern != "" && section != "default")
+	return section, pattern, ok
+}
+
+// parseDefinition reads the definition of a pipeline to run: a custom or branch pipeline by its
+// name or pattern, or the default one.
 func parseDefinition(s string) (*bitbucket.Selector, error) {
-	if strings.TrimSpace(s) == "default" {
-		return &bitbucket.Selector{Type: "default"}, nil
-	}
-	kind, pattern, ok := strings.Cut(s, ":")
-	kind, pattern = strings.TrimSpace(kind), strings.TrimSpace(pattern)
-	if !ok || pattern == "" || (kind != "custom" && kind != "branches") {
+	section, pattern, ok := splitDefinition(s)
+	if !ok || section != "default" && (pattern == "" || section != "custom" && section != "branches") {
 		return nil, fmt.Errorf("pipeline must be 'custom: <name>', 'branches: <pattern>' or 'default', got %q", s)
 	}
-	return &bitbucket.Selector{Type: kind, Pattern: pattern}, nil
+	return &bitbucket.Selector{Type: section, Pattern: pattern}, nil
 }
 
 func (t *tools) addSchedule(ctx context.Context, req *mcp.CallToolRequest, in addScheduleInput) (*mcp.CallToolResult, scheduleResult, error) {

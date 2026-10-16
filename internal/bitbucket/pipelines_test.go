@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -47,7 +49,7 @@ func TestListPipelinesQuery(t *testing.T) {
 		got = r.URL.Path + "?" + r.URL.RawQuery
 		_, _ = fmt.Fprint(w, `{"values": [{"build_number": 2}, {"build_number": 1}], "size": 9, "next": "https://api.bitbucket.org/2.0/x?page=4"}`)
 	})
-	ps, err := c.ListPipelines(context.Background(), "repo-a", "main", 3, 2)
+	ps, err := c.ListPipelines(context.Background(), "repo-a", PipelineFilter{Branch: "main"}, 3, 2)
 	if err != nil || len(ps.Values) != 2 || ps.Values[0].BuildNumber != 2 || !ps.More || ps.Total == nil || *ps.Total != 9 {
 		t.Fatalf("ListPipelines = %+v, %v", ps, err)
 	}
@@ -56,11 +58,30 @@ func TestListPipelinesQuery(t *testing.T) {
 	}
 }
 
+func TestListPipelinesFilterQuery(t *testing.T) {
+	var got url.Values
+	c := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Query()
+		_, _ = fmt.Fprint(w, `{"values": [{"build_number": 1, "trigger": {"name": "SCHEDULED"}}]}`)
+	})
+	ps, err := c.ListPipelines(context.Background(), "repo-a", PipelineFilter{
+		RefType: "BRANCH", Commit: "abc", SelectorType: "CUSTOM", Pattern: "deploy", Trigger: "SCHEDULED",
+	}, 1, 5)
+	if err != nil || len(ps.Values) != 1 || ps.Values[0].Trigger.Name != "SCHEDULED" {
+		t.Fatalf("ListPipelines = %+v, %v", ps, err)
+	}
+	want := url.Values{"sort": {"-created_on"}, "pagelen": {"5"}, "page": {"1"}, "target.ref_type": {"BRANCH"},
+		"target.commit.hash": {"abc"}, "target.selector.type": {"CUSTOM"}, "target.selector.pattern": {"deploy"}, "trigger_type": {"SCHEDULED"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("query = %v, want %v", got, want)
+	}
+}
+
 func TestListPipelinesLastPage(t *testing.T) {
 	c := newTestClient(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, `{"values": [{"build_number": 1}]}`)
 	})
-	ps, err := c.ListPipelines(context.Background(), "repo-a", "", 2, 5)
+	ps, err := c.ListPipelines(context.Background(), "repo-a", PipelineFilter{}, 2, 5)
 	if err != nil || len(ps.Values) != 1 || ps.More || ps.Total != nil {
 		t.Fatalf("ListPipelines = %+v, %v", ps, err)
 	}
@@ -71,7 +92,7 @@ func TestListPipelinesRefusesOversizedPage(t *testing.T) {
 	c := newTestClient(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, `{"values": [{"build_number": 3}, {"build_number": 2}, {"build_number": 1}]}`)
 	})
-	if ps, err := c.ListPipelines(context.Background(), "repo-a", "", 1, 2); err == nil {
+	if ps, err := c.ListPipelines(context.Background(), "repo-a", PipelineFilter{}, 1, 2); err == nil {
 		t.Fatalf("ListPipelines = %+v, want an error", ps)
 	}
 }
