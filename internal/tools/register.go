@@ -56,7 +56,7 @@ func NewServer(ctx context.Context, impl *mcp.Implementation, bb *bitbucket.Clie
 }
 
 func newServer(impl *mcp.Implementation, t *tools) *mcp.Server {
-	t.bb = t.bb.WithAllowedProjects(t.policy.Projects)
+	t.bb = t.bb.WithAllowedProjects(t.policy.Projects, t.policy.Repositories)
 	if t.policy.Projects != nil {
 		// Project checks double the requests per poll; keep the same hourly budget.
 		t.pollInterval *= 2

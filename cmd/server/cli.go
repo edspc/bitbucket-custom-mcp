@@ -36,6 +36,7 @@ Optional access limits (JSON arrays; unset allows all):
   BITBUCKET_ALLOWED_PROJECTS   Exact project keys or UUIDs; [] denies all
   BITBUCKET_ALLOWED_TOOLS      Exact tool names; [] or ["*"] allows all
   BITBUCKET_ALLOWED_REFS       branch:<name> or tag:<name>; [] denies all
+  With both repository and project lists, either list allows a repository.
 
 Optional browser confirmation (JSON array; unset or [] confirms every write):
   BITBUCKET_CONFIRM_TOOLS      Exact tool names; ["*"] confirms every tool

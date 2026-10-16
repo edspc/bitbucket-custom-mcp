@@ -33,6 +33,7 @@ type Client struct {
 	http            *http.Client
 	cfg             Config
 	allowedProjects []string
+	allowedRepos    []string // allowed in any project when projects are limited
 }
 
 func New(httpClient *http.Client, cfg Config) *Client {

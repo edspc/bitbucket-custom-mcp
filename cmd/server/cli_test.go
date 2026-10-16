@@ -18,6 +18,7 @@ func TestCommandLine(t *testing.T) {
 		{"version", []string{"--version"}, true, "bitbucket-custom-mcp " + version + "\n", false},
 		{"help", []string{"--help"}, true, "Usage:", false},
 		{"short help", []string{"-h"}, true, "Usage:", false},
+		{"repository or project", []string{"--help"}, true, "either list allows a repository", false},
 		{"unknown", []string{"--unknown"}, true, "", true},
 		{"positional", []string{"serve"}, true, "", true},
 		{"extra argument", []string{"--version", "extra"}, true, "", true},

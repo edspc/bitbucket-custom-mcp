@@ -230,24 +230,30 @@ These optional environment variables narrow the server's authority. Each is a
 JSON array of names. An unset variable allows all names within the configured
 workspace. For `BITBUCKET_ALLOWED_TOOLS`, `[]` also keeps that default and the
 entry `"*"` allows every tool. Repository, project and ref lists use exact names
-without wildcard expansion; `[]` denies all for those three lists. Invalid
+without wildcard expansion; `[]` denies all for those three lists, except that
+repository and project lists add up when both are set (see below). Invalid
 arrays stop the server rather than silently removing the restriction.
 
 | Variable | Example | Restriction |
 |----------|---------|-------------|
-| `BITBUCKET_ALLOWED_REPOS` | `["repo-a","repo-b"]` | Applies to both repositories of a link and all repository tools/resources; workspace variables are disabled when this list is set |
-| `BITBUCKET_ALLOWED_PROJECTS` | `["APP","{01234567-89ab-cdef-0123-456789abcdef}"]` | Only repositories in these projects in the configured workspace; exact project keys or UUIDs, not display names; workspace variables are disabled when this list is set |
+| `BITBUCKET_ALLOWED_REPOS` | `["repo-a","repo-b"]` | These repositories, in any project; applies to both repositories of a link and all repository tools/resources; workspace variables are disabled when this list is set |
+| `BITBUCKET_ALLOWED_PROJECTS` | `["APP","{01234567-89ab-cdef-0123-456789abcdef}"]` | Repositories in these projects in the configured workspace; exact project keys or UUIDs, not display names; workspace variables are disabled when this list is set |
 | `BITBUCKET_ALLOWED_TOOLS` | `["get_pull_request","list_pull_requests"]` | Only these tools can execute; unset, `[]` or `["*"]` allows all; pipeline resources and subscriptions also require `get_pipeline` |
 | `BITBUCKET_ALLOWED_REFS` | `["branch:main","tag:v1.2.0"]` | Only these refs can run pipelines, only at commits on them, or have schedules added/deleted |
 
-Repository and project lists intersect: a repository must satisfy both when both
-are configured. For example, `BITBUCKET_ALLOWED_PROJECTS='["APP","OPS"]'` allows
-repositories in either project, and adding `BITBUCKET_ALLOWED_REPOS='["api"]'`
-limits access to `api` only if it belongs to one of those projects. Use project
-UUIDs to keep the restriction tied to the same project if its key changes.
+Repository and project lists add up: when both are configured, a repository is
+allowed if either list allows it. For example, `BITBUCKET_ALLOWED_PROJECTS='["APP","OPS"]'`
+allows repositories in either project, and adding `BITBUCKET_ALLOWED_REPOS='["tools"]'`
+also allows `tools` wherever it is. With both set, `[]` in one list adds nothing,
+so access comes from the other list alone. Use project UUIDs to keep the
+restriction tied to the same project if its key changes.
+
+Earlier releases intersected the two lists: a repository had to satisfy both. A
+configuration with both lists set now allows more; review it when upgrading.
 
 With project restrictions, each repository API request first reads its current
-`project.key` and `project.uuid` using the server's account. This adds one metadata
+`project.key` and `project.uuid` using the server's account, unless the
+repository is listed in `BITBUCKET_ALLOWED_REPOS`. This adds one metadata
 request per API request and requires repository read access. Missing project
 metadata or a failed lookup refuses the operation. Membership is never cached,
 so moves out of an allowed project are checked after browser approval and during
@@ -408,7 +414,8 @@ The timeout also cancels API requests and progress notifications. On timeout the
 result contains the last complete status; `pipeline` is omitted if the first poll
 did not finish. Client cancellation remains an error.
 
-A poll costs two API requests (four with project restrictions), and Bitbucket
+A poll costs two API requests (up to four with project restrictions; two for a
+repository listed in `BITBUCKET_ALLOWED_REPOS`), and Bitbucket
 allows 1,000 requests an hour to
 repository data, so at most two pipelines are polled at a time, by
 `watch_pipeline` calls and [subscriptions](#status-subscriptions) together;
