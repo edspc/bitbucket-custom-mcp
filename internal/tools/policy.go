@@ -12,11 +12,12 @@ import (
 )
 
 // Policy is operator configuration, never a tool argument. Repository, project and ref
-// lists allow all when nil and deny all when empty. Tool lists use defaults when empty
-// and accept "*" for every tool. Ref limits apply to runs and schedules.
+// lists allow all when nil and deny all when empty. With both repository and project lists,
+// a repository either list allows is allowed. Tool lists use defaults when empty and accept
+// "*" for every tool. Ref limits apply to runs and schedules.
 type Policy struct {
 	Repositories      []string
-	Projects          []string // exact project keys or UUIDs, checked against live repository metadata
+	Projects          []string // exact project keys or UUIDs, checked by the client against live repository metadata
 	Tools             []string // empty allows all; otherwise exact names or "*"
 	ConfirmationTools []string // empty confirms writes; otherwise exact names or "*"
 	Refs              []string // exact "branch:<name>" or "tag:<name>" entries
@@ -26,7 +27,9 @@ func (p Policy) checkRepo(repo string) error {
 	if repo == "." || repo == ".." || repo == "" || strings.Trim(repo, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") != "" {
 		return errors.New("repo must be a repository slug, without path segments")
 	}
-	if p.Repositories != nil && !slices.Contains(p.Repositories, repo) {
+	// With project limits, an unlisted repository may still be in an allowed project; the
+	// Bitbucket client checks that before every request to it.
+	if p.Repositories != nil && p.Projects == nil && !slices.Contains(p.Repositories, repo) {
 		return errors.New("repository is not allowed by the server policy")
 	}
 	return nil

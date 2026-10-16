@@ -20,17 +20,20 @@ func WithWriteDeadline(ctx context.Context, until time.Time) context.Context {
 }
 
 // WithAllowedProjects returns a separate client using the same transport and credentials.
-// Nil allows all projects; an empty non-nil list denies all repository access.
-func (c *Client) WithAllowedProjects(projects []string) *Client {
+// Nil projects allow all; otherwise a repository must be in one of them or among repos, which
+// are allowed wherever they are. An empty non-nil list of projects allows only repos.
+func (c *Client) WithAllowedProjects(projects, repos []string) *Client {
 	restricted := *c
 	restricted.allowedProjects = slices.Clone(projects)
+	restricted.allowedRepos = slices.Clone(repos)
 	return &restricted
 }
 
 // CheckRepositoryProject uses live metadata: a cached membership could authorize a write
 // after a repository has moved to a different project while browser approval was pending.
+// A repository allowed by name needs no metadata, since its project does not matter.
 func (c *Client) CheckRepositoryProject(ctx context.Context, repo string) error {
-	if c.allowedProjects == nil {
+	if c.allowedProjects == nil || slices.Contains(c.allowedRepos, repo) {
 		return nil
 	}
 	if len(c.allowedProjects) == 0 {

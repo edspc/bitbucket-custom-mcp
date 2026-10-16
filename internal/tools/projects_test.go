@@ -21,7 +21,13 @@ func TestProjectsRestrictToolsAndBothLinkRepositories(t *testing.T) {
 		{"allowed", Policy{Projects: []string{"APP"}}, "list_variables", map[string]any{"scope": "repository", "repo": "repo-a"}, true},
 		{"wrong project", Policy{Projects: []string{"OTHER"}}, "list_variables", map[string]any{"scope": "repository", "repo": "repo-a"}, false},
 		{"empty projects", Policy{Projects: []string{}}, "list_variables", map[string]any{"scope": "repository", "repo": "repo-a"}, false},
-		{"repo intersection", Policy{Projects: []string{"APP"}, Repositories: []string{"repo-b"}}, "list_variables", map[string]any{"scope": "repository", "repo": "repo-a"}, false},
+		{"in project, not listed", Policy{Projects: []string{"APP"}, Repositories: []string{"repo-b"}}, "list_variables", map[string]any{"scope": "repository", "repo": "repo-a"}, true},
+		{"listed, other project", Policy{Projects: []string{"APP"}, Repositories: []string{"repo-b"}}, "list_variables", map[string]any{"scope": "repository", "repo": "repo-b"}, true},
+		{"neither listed nor in project", Policy{Projects: []string{"OTHER"}, Repositories: []string{"repo-b"}}, "list_variables", map[string]any{"scope": "repository", "repo": "repo-a"}, false},
+		{"listed, no projects", Policy{Projects: []string{}, Repositories: []string{"repo-b"}}, "list_variables", map[string]any{"scope": "repository", "repo": "repo-b"}, true},
+		{"not listed, no projects", Policy{Projects: []string{}, Repositories: []string{"repo-b"}}, "list_variables", map[string]any{"scope": "repository", "repo": "repo-a"}, false},
+		{"in project, no repos", Policy{Projects: []string{"APP"}, Repositories: []string{}}, "list_variables", map[string]any{"scope": "repository", "repo": "repo-a"}, true},
+		{"workspace with both", Policy{Projects: []string{"APP"}, Repositories: []string{"repo-b"}}, "list_variables", map[string]any{"scope": "workspace"}, false},
 		{"workspace", Policy{Projects: []string{"APP"}}, "list_variables", map[string]any{"scope": "workspace"}, false},
 		{"key source", Policy{Projects: []string{"OPS"}}, "link_repos_by_key", keyArgs(false), false},
 		{"key target", Policy{Projects: []string{"APP"}}, "link_repos_by_key", keyArgs(false), false},
@@ -41,6 +47,20 @@ func TestProjectsRestrictToolsAndBothLinkRepositories(t *testing.T) {
 				t.Fatal("denied call reached approval or a write")
 			}
 		})
+	}
+}
+
+// A link may join a repository of an allowed project with one allowed by name elsewhere.
+func TestLinkJoinsProjectAndListedRepository(t *testing.T) {
+	f := newFake()
+	f.projects = map[string]string{"repo-a": "APP", "repo-b": "OPS"}
+	u := &fakeUser{pages: f.pages, action: "accept", values: url.Values{}}
+	cs := connectClient(t, newTestServer(t, f, Policy{Projects: []string{"APP"}, Repositories: []string{"repo-b"}}), clientOptions(u.elicit), "")
+	if out, isErr := call(t, cs, "link_repos_by_key", keyArgs(false)); isErr || !strings.Contains(out, `"added"`) {
+		t.Fatalf("result = %s (error %v)", out, isErr)
+	}
+	if keys := f.keysOf("repo-b"); len(keys) != 1 || keys[0].Label != "repo-a" {
+		t.Fatalf("deploy keys = %+v", keys)
 	}
 }
 

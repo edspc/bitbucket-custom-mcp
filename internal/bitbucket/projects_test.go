@@ -50,7 +50,7 @@ func TestAllowedProjectsMatchExactKeyOrUUIDAndFailClosed(t *testing.T) {
 				}
 				requests++
 				_, _ = fmt.Fprint(w, `{"enabled":true}`)
-			}).WithAllowedProjects(tc.projects)
+			}).WithAllowedProjects(tc.projects, nil)
 			enabled, err := c.PipelinesEnabled(t.Context(), "repo-a")
 			if (err == nil) != tc.allowed || enabled != tc.allowed || lookups != tc.lookups || tc.allowed && requests != 1 || !tc.allowed && requests != 0 {
 				t.Fatalf("enabled=%v, err=%v, lookups=%d, requests=%d", enabled, err, lookups, requests)
@@ -73,7 +73,7 @@ func TestProjectsRecheckedBeforeEachRequestAndWrite(t *testing.T) {
 			return
 		}
 		writes++
-	}).WithAllowedProjects([]string{"APP"})
+	}).WithAllowedProjects([]string{"APP"}, nil)
 	if _, err := c.PipelinesEnabled(t.Context(), "repo-a"); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestProjectsProtectGETRedirectsAndPagination(t *testing.T) {
 				}
 				requests++
 				_, _ = fmt.Fprint(w, `{"values":[],"next":"https://api.bitbucket.org/2.0/repositories/ws/repo-b/deploy-keys?page=2"}`)
-			}).WithAllowedProjects([]string{"APP"})
+			}).WithAllowedProjects([]string{"APP"}, nil)
 			var err error
 			switch kind {
 			case "diff redirect":
@@ -149,19 +149,43 @@ func TestProjectCheckUsesServerCredentialsBeforeTokenProbe(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer provided-token" {
 			t.Fatal("probe did not use supplied token")
 		}
-	}).WithAllowedProjects([]string{"APP"})
+	}).WithAllowedProjects([]string{"APP"}, nil)
 	if err := c.CheckTokenAccess(t.Context(), "repo-a", "provided-token", []string{"repository"}); err != nil || requests != 2 {
 		t.Fatalf("err=%v requests=%d", err, requests)
+	}
+}
+
+// A repository allowed by name is allowed in any project, without reading its project; any
+// other repository still needs an allowed project.
+func TestListedRepositoriesNeedNoProject(t *testing.T) {
+	for _, projects := range [][]string{{"APP"}, {}} {
+		lookups, requests := 0, 0
+		c := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Query().Has("fields") {
+				lookups++
+				_, _ = fmt.Fprint(w, `{"project":{"key":"OPS"}}`)
+				return
+			}
+			requests++
+			_, _ = fmt.Fprint(w, `{"enabled":true}`)
+		}).WithAllowedProjects(projects, []string{"repo-a"})
+		if _, err := c.PipelinesEnabled(t.Context(), "repo-a"); err != nil || lookups != 0 || requests != 1 {
+			t.Fatalf("projects %v: listed repository: err=%v, lookups=%d, requests=%d", projects, err, lookups, requests)
+		}
+		if _, err := c.PipelinesEnabled(t.Context(), "repo-b"); err == nil || requests != 1 {
+			t.Fatalf("projects %v: unlisted repository in another project: err=%v, requests=%d", projects, err, requests)
+		}
 	}
 }
 
 func TestProjectRestrictionDoesNotChangeOriginalClient(t *testing.T) {
 	c := newTestClient(func(w http.ResponseWriter, _ *http.Request) { _, _ = fmt.Fprint(w, `{"enabled":true}`) })
 	projects := []string{"APP"}
-	restricted := c.WithAllowedProjects(projects)
-	projects[0] = "OPS"
-	if restricted.allowedProjects[0] != "APP" {
-		t.Fatal("caller changed configured projects")
+	repos := []string{"repo-a"}
+	restricted := c.WithAllowedProjects(projects, repos)
+	projects[0], repos[0] = "OPS", "repo-b"
+	if restricted.allowedProjects[0] != "APP" || restricted.allowedRepos[0] != "repo-a" {
+		t.Fatal("caller changed configured projects or repositories")
 	}
 	if _, err := c.PipelinesEnabled(t.Context(), "repo-a"); err != nil {
 		t.Fatalf("original client acquired project restrictions: %v", err)
@@ -199,7 +223,7 @@ func TestWriteDeadlineCoversProjectChecksButNotSentWrites(t *testing.T) {
 					case <-time.After(200 * time.Millisecond):
 					}
 				}
-			}).WithAllowedProjects([]string{"APP"})
+			}).WithAllowedProjects([]string{"APP"}, nil)
 			until := time.Now().Add(100 * time.Millisecond)
 			if kind == "expired" {
 				until = time.Now().Add(-time.Second)
