@@ -6,7 +6,7 @@ import (
 	"io"
 )
 
-const version = "0.4.3"
+const version = "0.5.0"
 
 // Informational commands exit before loading credentials or starting the stdio protocol.
 func commandLine(args []string, out io.Writer) (bool, error) {
