@@ -168,7 +168,7 @@ type listPipelinesInput struct {
 	RefType    string `json:"ref_type,omitempty" jsonschema:"only pipelines that built a branch, a lightweight tag (tag) or an annotated tag (annotated_tag)"`
 	Commit     string `json:"commit,omitempty" jsonschema:"only pipelines that built this commit, given by its full 40-character hash"`
 	Definition string `json:"definition,omitempty" jsonschema:"only pipelines of this part of bitbucket-pipelines.yml, written as results show it: 'custom', 'branches', 'tags', 'pull-requests' or 'default', and for all but 'default' optionally a name or pattern after a colon, such as 'custom: deploy' or 'branches: main'"`
-	Trigger    string `json:"trigger,omitempty" jsonschema:"only pipelines started this way: push, manual (by someone, in Bitbucket or through the API) or scheduled"`
+	Trigger    string `json:"trigger,omitempty" jsonschema:"only pipelines started this way: push, manual (by someone, in Bitbucket or through the API), scheduled, or parent_step for child pipelines a step started"`
 	Limit      int    `json:"limit,omitempty" jsonschema:"how many pipelines a page holds; 10 when omitted, at most 50"`
 	Page       int    `json:"page,omitempty" jsonschema:"page to return, from 1 for the latest pipelines; 1 when omitted. Pass next_page of the previous result, with the same filters and limit"`
 }
@@ -199,10 +199,10 @@ func (in listPipelinesInput) filter() (bitbucket.PipelineFilter, error) {
 	}
 	switch in.Trigger {
 	case "":
-	case "push", "manual", "scheduled":
+	case "push", "manual", "scheduled", "parent_step":
 		f.Trigger = strings.ToUpper(in.Trigger)
 	default:
-		return f, fmt.Errorf("trigger must be push, manual or scheduled, got %q", in.Trigger)
+		return f, fmt.Errorf("trigger must be push, manual, scheduled or parent_step, got %q", in.Trigger)
 	}
 	return f, nil
 }
