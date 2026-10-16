@@ -146,7 +146,7 @@ type PipelineFilter struct {
 	Commit       string
 	SelectorType string // CUSTOM, BRANCH, TAG, PULLREQUESTS or DEFAULT: the section of bitbucket-pipelines.yml
 	Pattern      string // the definition's name or pattern in that section
-	Trigger      string // PUSH, MANUAL or SCHEDULED
+	Trigger      string // PUSH, MANUAL, SCHEDULED or PARENT_STEP
 }
 
 // ListPipelines returns page number page, from 1, of the pipelines of repo that f picks, limit a

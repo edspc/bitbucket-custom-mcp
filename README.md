@@ -429,7 +429,7 @@ combined, keep the pipelines:
 | `ref_type` | that built a `branch`, a lightweight `tag` or an `annotated_tag` |
 | `commit` | that built this commit, by its full 40-character hash |
 | `definition` | of a part of `bitbucket-pipelines.yml`, written as results show it: `custom`, `branches`, `tags`, `pull-requests` or `default`, and for all but `default` optionally a name or pattern, such as `custom: deploy` or `branches: main` |
-| `trigger` | started by a `push`, `manual`ly (in Bitbucket or through the API) or `scheduled` |
+| `trigger` | started by a `push`, `manual`ly (in Bitbucket or through the API), `scheduled`, or by a `parent_step` (child pipelines) |
 
 Each pipeline also shows its `trigger`: `push`, `manual`, `scheduled`, or
 `parent_step` for a child pipeline a step started. Filter values are checked

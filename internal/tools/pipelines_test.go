@@ -169,6 +169,7 @@ func TestListPipelinesFilters(t *testing.T) {
 		{"branch", "dev", "custom", "nightly", "SCHEDULED", ""},                   // 4
 		{"branch", "dev", "default", "", "PUSH", ""},                              // 5
 		{"annotated_tag", "v2", "tags", "v*", "MANUAL", ""},                       // 6
+		{"branch", "dev", "custom", "child", "PARENT_STEP", ""},                   // 7
 	} {
 		target := bitbucket.RefTarget(run.refType, run.ref, run.commit)
 		target.Selector = &bitbucket.Selector{Type: run.section, Pattern: run.pattern}
@@ -183,7 +184,8 @@ func TestListPipelinesFilters(t *testing.T) {
 		want  []int
 		query string
 	}{
-		"custom section":     {map[string]any{"definition": "custom"}, []int{4, 2}, "target.selector.type=CUSTOM"},
+		"custom section":     {map[string]any{"definition": "custom"}, []int{7, 4, 2}, "target.selector.type=CUSTOM"},
+		"child pipelines":    {map[string]any{"trigger": "parent_step"}, []int{7}, "trigger_type=PARENT_STEP"},
 		"custom by name":     {map[string]any{"definition": " custom : deploy "}, []int{2}, "target.selector.pattern=deploy&target.selector.type=CUSTOM"},
 		"branch definitions": {map[string]any{"definition": "branches: main"}, []int{1}, "target.selector.pattern=main&target.selector.type=BRANCH"},
 		"pull requests":      {map[string]any{"definition": "pull-requests"}, nil, "target.selector.type=PULLREQUESTS"},
@@ -242,7 +244,7 @@ func TestListPipelinesRefusesBadFilters(t *testing.T) {
 		"unknown section":       {map[string]any{"definition": "bookmarks"}, "definition must be"},
 		"section in upper case": {map[string]any{"definition": "CUSTOM"}, "definition must be"},
 		"default with a name":   {map[string]any{"definition": "default: x"}, "definition must be"},
-		"unknown trigger":       {map[string]any{"trigger": "schedule"}, "trigger must be push, manual or scheduled"},
+		"unknown trigger":       {map[string]any{"trigger": "schedule"}, "trigger must be push, manual, scheduled or parent_step"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFake()
