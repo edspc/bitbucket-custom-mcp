@@ -272,8 +272,10 @@ so moves out of an allowed project are checked after browser approval and during
 polling. Both repositories of a link are checked, including its source again
 before the write. Project checks before a write must finish within its approval's
 deadline; a write already sent can complete after that deadline. Workspace-wide
-operations and commit lookups in a fork outside
-the configured workspace are refused. Bitbucket provides no atomic project check
+operations and commit lookups in a fork outside the configured workspace are
+refused; `search_repositories` instead narrows its workspace listing to the
+allowed repositories and projects and filters the answer (see
+[Repository search](#repository-search)). Bitbucket provides no atomic project check
 and write: an administrator can still move a repository between those requests.
 
 Keep these settings in the operator's environment or user-scoped MCP config,
@@ -303,6 +305,25 @@ protects the secret input/error path; pipeline code is still responsible for
 not exposing secrets in its own output.
 
 ## Tools
+
+### Repository search
+
+`search_repositories` finds repositories of the workspace whose name contains
+`query`, optionally only in the project with key `project`, among those the
+access limits allow; with no `query` it lists them all. They come by slug, a
+page at a time (`limit` a page, 10 by default and at most 50): `next_page` is
+passed back as `page`, with the same inputs, for more. Each comes with its slug,
+which the `repo` input of the other tools takes, name, project, description,
+language, privacy, main branch, last update and page on bitbucket.org.
+
+The request itself asks Bitbucket only for allowed repositories: those listed
+in `BITBUCKET_ALLOWED_REPOS`, and, with `BITBUCKET_ALLOWED_PROJECTS`, those in
+an allowed project, by key or by UUID for entries in braces. The server then
+checks every repository of the answer against the same rule, by the project it
+shows, and drops any other. As only the page returned can be checked, `total`,
+Bitbucket's count of every page, is left out while access limits are set.
+So no project lookups are needed, and a call costs one API request; when the
+limits allow nothing, it makes none.
 
 ### Repository and deployment UUIDs
 

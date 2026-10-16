@@ -35,6 +35,20 @@ func (p Policy) checkRepo(repo string) error {
 	return nil
 }
 
+// allowsListed applies to a repository from a listing, with the project the listing shows, the
+// rule that checkRepo and the client's project check apply to a request naming it.
+func (p Policy) allowsListed(slug, projectKey, projectUUID string) bool {
+	if p.checkRepo(slug) != nil {
+		return false
+	}
+	if p.Projects == nil {
+		return true
+	}
+	return slices.Contains(p.Repositories, slug) ||
+		projectKey != "" && slices.Contains(p.Projects, projectKey) ||
+		projectUUID != "" && slices.Contains(p.Projects, projectUUID)
+}
+
 func (p Policy) checkRef(kind, name string) error {
 	if p.Refs != nil && !slices.Contains(p.Refs, kind+":"+name) {
 		return errors.New("ref is not allowed by the server policy")
