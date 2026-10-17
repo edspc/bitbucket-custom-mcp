@@ -4,12 +4,13 @@ project_name: bitbucket-custom-mcp
 before:
   hooks:
     # Checks the tag against the committed version, then gathers the license notices of Go and
-    # of the modules linked into the builds below, which the archives ship.
+    # of the modules linked into the builds below, for the release notes.
     - >-
-      go run github.com/edspc/go-release-actions/cmd/release@4d219be614b16a36b69a05c1f6bfdd031857e27c
+      go run github.com/edspc/go-release-actions/cmd/release@14f3e2c0b2fa2023d2ac52a8d72cd760cf53c96c
       notices -out .scratch/THIRD_PARTY_LICENSES -main ./cmd/server
       -platforms darwin/arm64,darwin/amd64,linux/arm64,linux/amd64
       -version "{{ .Version }}" -file cmd/server/cli.go -snapshot={{ .IsSnapshot }}
+      -combined .scratch/release-licenses.txt
 
 builds:
   - main: ./cmd/server
@@ -23,23 +24,14 @@ builds:
     ldflags: [-s, -w]
 
 archives:
-  - name_template: '{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}'
-    formats: [tar.gz]
-    files:
-      - README.md
-      - LICENSE
-      - src: .scratch/THIRD_PARTY_LICENSES/**/*
-        dst: THIRD_PARTY_LICENSES
+  - name_template: '{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}'
+    formats: [binary]
 
 source:
-  enabled: true
-  format: tar.gz
-  name_template: '{{ .ProjectName }}-{{ .Version }}-source'
-  prefix_template: '{{ .ProjectName }}-{{ .Version }}/'
+  enabled: false
 
 checksum:
-  name_template: checksums.txt
-  algorithm: sha256
+  disable: true
 
 snapshot:
   version_template: '{{ .Version }}-SNAPSHOT'
@@ -52,3 +44,12 @@ release:
     owner: edspc
     name: bitbucket-custom-mcp
   name_template: '{{ .Tag }}'
+  footer: |
+    <details>
+    <summary>License notices</summary>
+
+    ~~~~text
+    {{ mustReadFile ".scratch/release-licenses.txt" }}
+    ~~~~
+
+    </details>
