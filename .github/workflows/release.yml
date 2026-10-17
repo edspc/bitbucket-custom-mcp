@@ -36,11 +36,11 @@ jobs:
           go-version-file: go.mod
       - name: Raise version
         id: version
-        uses: edspc/go-release-actions/bump@4d219be614b16a36b69a05c1f6bfdd031857e27c # main
+        uses: edspc/go-release-actions/bump@14f3e2c0b2fa2023d2ac52a8d72cd760cf53c96c
         with:
           part: ${{ inputs.bump }}
           file: cmd/server/cli.go
-          replace: README.md
+          replace: docs/cli.md
       - name: Check version is new
         env:
           RELEASE_BUMP: ${{ inputs.bump }}
@@ -67,7 +67,7 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add cmd/server/cli.go README.md
+          git add cmd/server/cli.go docs/cli.md
           git commit -m "Release v$RELEASE_VERSION"
           git tag -a "v$RELEASE_VERSION" -m "Release v$RELEASE_VERSION"
       - name: Push version commit and tag
