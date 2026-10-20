@@ -144,6 +144,53 @@ func TestWatchLogUnavailableAndRetry(t *testing.T) {
 	}
 }
 
+func TestWatchLogUnavailableAtTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		initial     string
+		recovered   bool
+		unavailable bool
+		wantLog     string
+	}{
+		{name: "missing", unavailable: true},
+		{name: "recovered", recovered: true, wantLog: "ready\n"},
+		{name: "missing with buffered text", initial: "partial", unavailable: true, wantLog: "partial"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFake()
+			twoSteps(f)
+			if tc.initial != "" {
+				f.logs["{s1}"] = tc.initial
+			}
+			f.onPipelineGet = func(n int) {
+				if n >= 2 {
+					if tc.recovered {
+						f.logs["{s1}"] = "ready\n"
+					} else {
+						delete(f.logs, "{s1}")
+					}
+				}
+			}
+			cs := connect(t, f, nil)
+			f.tools.pollInterval = 400 * time.Millisecond
+			params := &mcp.CallToolParams{Name: "watch_pipeline", Arguments: map[string]any{"repo": "repo-a", "pipeline": "1", "stream_logs": true, "timeout_seconds": 1}}
+			params.SetProgressToken("logs")
+			res, err := cs.CallTool(t.Context(), params)
+			if err != nil || res.IsError {
+				t.Fatalf("call = %+v, %v", res, err)
+			}
+			got := decodeResult[watchPipelineResult](t, res.Content[0].(*mcp.TextContent).Text)
+			if got.Outcome != "timeout" || len(got.Logs) != 1 {
+				t.Fatalf("result = %+v", got)
+			}
+			chunk := got.Logs[0]
+			if chunk.Unavailable != tc.unavailable || chunk.Log != tc.wantLog || chunk.Step.UUID != "{s1}" || chunk.ContentTrust != "untrusted" {
+				t.Fatalf("chunk = %+v", chunk)
+			}
+		})
+	}
+}
+
 func TestWatchLogGapsResetsAndBoundedResult(t *testing.T) {
 	result := watchPipelineResult{}
 	stream := &watchLogStream{result: &result, steps: map[string]*watchLogState{}}
