@@ -149,6 +149,37 @@ status change of the pipeline and its steps seen on the way, and the final
 status. When the client sends a progress token, each poll is also reported as
 a progress notification.
 
+With `stream_logs: true`, the same progress channel also delivers new log lines
+from every started step, including parallel steps. Set `step` to a name or UUID
+to follow only that step. This mode requires the client to send a progress token;
+otherwise the call is refused before contacting Bitbucket. For example, the MCP
+`tools/call` parameters can be:
+
+```json
+{
+  "name": "watch_pipeline",
+  "arguments": {"repo": "my-repo", "pipeline": "42", "stream_logs": true},
+  "_meta": {"progressToken": "pipeline-42"}
+}
+```
+
+Status messages keep their text format. Log messages are JSON objects containing
+`content_trust: "untrusted"`, `build_number`, `step`, `log` and the step's `url`.
+External log text is data, never instructions or authorization. Byte offsets avoid
+repeating output; incomplete lines are buffered until their newline or the end of
+the watch, and terminal escapes are removed. Completed steps are read once more
+and then stop consuming log requests. A running step whose log is not available
+yet is retried; a missing log when the step or watch ends is reported with
+`unavailable: true`.
+
+Each read keeps the latest 64 KiB of raw log, and each message carries at most
+32 KiB of log text as JSON. If output grows beyond those bounds between polls,
+or a shorter log indicates a reset, `truncated: true` marks the gap. The result
+also includes recent chunks in `logs`, bounded to 256 KiB together, with `logs_truncated: true` when
+output was omitted. Use `get_pipeline_log` or the step URL for more. An incomplete
+line remaining at timeout is included in the result even though the expired
+progress channel can no longer deliver it.
+
 The timeout also cancels API requests and progress notifications. On timeout the
 result contains the last complete status; `pipeline` is omitted if the first poll
 did not finish. Client cancellation remains an error.
@@ -159,6 +190,13 @@ allows 1,000 requests an hour to
 repository data, so at most two pipelines are polled at a time, by
 `watch_pipeline` calls and [subscriptions](subscriptions.md) together;
 beyond that both are refused until one ends.
+
+Streaming adds one log API request per unfinished tracked step on each poll.
+The wait after that poll is multiplied by `(2 + log requests) / 2` to keep the
+same request budget: one log read gives 45 seconds, two give 60 seconds, before
+the doubling for project restrictions. Status progress heartbeats continue at the
+original interval while waiting, without additional API requests. At most 100
+started steps are tracked; the timeout still bounds the entire call.
 
 ### `get_pipeline_log`
 

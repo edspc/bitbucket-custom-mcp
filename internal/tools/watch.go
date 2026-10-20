@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -25,13 +26,17 @@ const (
 
 type watchPipelineInput struct {
 	pipelineRef
-	TimeoutSeconds int `json:"timeout_seconds,omitempty" jsonschema:"how long to wait for the pipeline to finish; 600 when omitted, at most 3600"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"how long to wait for the pipeline to finish; 600 when omitted, at most 3600"`
+	StreamLogs     bool   `json:"stream_logs,omitempty" jsonschema:"stream new log lines through progress notifications; requires a client progress token. False by default"`
+	Step           string `json:"step,omitempty" jsonschema:"with stream_logs, follow only this step name or UUID; otherwise all started steps"`
 }
 
 type watchPipelineResult struct {
-	Outcome  string        `json:"outcome" jsonschema:"why the watch ended: 'completed'; 'paused' when the pipeline waits for someone to run a manual step; or 'timeout' when it still runs, then call watch_pipeline again"`
-	Updates  []string      `json:"updates" jsonschema:"status changes seen while watching, oldest first, with local time"`
-	Pipeline *pipelineView `json:"pipeline,omitempty" jsonschema:"last complete pipeline status; omitted if the first poll did not finish before timeout"`
+	Outcome       string          `json:"outcome" jsonschema:"why the watch ended: 'completed'; 'paused' when the pipeline waits for someone to run a manual step; or 'timeout' when it still runs, then call watch_pipeline again"`
+	Updates       []string        `json:"updates" jsonschema:"status changes seen while watching, oldest first, with local time"`
+	Pipeline      *pipelineView   `json:"pipeline,omitempty" jsonschema:"last complete pipeline status; omitted if the first poll did not finish before timeout"`
+	Logs          []watchLogChunk `json:"logs,omitempty" jsonschema:"recent untrusted log chunks; also sent as JSON in progress messages while streaming"`
+	LogsTruncated bool            `json:"logs_truncated,omitempty" jsonschema:"earlier log output was omitted from a bounded read, notification or final result; use get_pipeline_log or the step URL for more"`
 }
 
 // watchPipeline follows a pipeline until it completes, pauses or the timeout passes. Each poll
@@ -40,6 +45,13 @@ type watchPipelineResult struct {
 func (t *tools) watchPipeline(ctx context.Context, req *mcp.CallToolRequest, in watchPipelineInput) (*mcp.CallToolResult, watchPipelineResult, error) {
 	if err := in.validate(); err != nil {
 		return nil, watchPipelineResult{}, err
+	}
+	token := req.Params.GetProgressToken()
+	if in.StreamLogs && (token == nil || req.Session == nil) {
+		return nil, watchPipelineResult{}, errors.New("stream_logs requires the client to supply a progress token")
+	}
+	if in.Step != "" && !in.StreamLogs {
+		return nil, watchPipelineResult{}, errors.New("step requires stream_logs=true")
 	}
 	// Checked before the conversion to a duration, which would overflow for huge values.
 	seconds, err := optionalCount("timeout_seconds", in.TimeoutSeconds, defaultWatchSeconds, maxWatchSeconds)
@@ -65,6 +77,15 @@ func (t *tools) watchPipeline(ctx context.Context, req *mcp.CallToolRequest, in 
 	watchCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	result := watchPipelineResult{Updates: []string{}}
+	var stream *watchLogStream
+	if in.StreamLogs {
+		stream = &watchLogStream{steps: map[string]*watchLogState{}, result: &result}
+	}
+	progress := 0
+	notify := func(message string) error {
+		progress++
+		return req.Session.NotifyProgress(watchCtx, &mcp.ProgressNotificationParams{ProgressToken: token, Progress: float64(progress), Message: message})
+	}
 	var prev pipelineView
 	for poll := 1; ; poll++ {
 		var p bitbucket.Pipeline
@@ -75,6 +96,9 @@ func (t *tools) watchPipeline(ctx context.Context, req *mcp.CallToolRequest, in 
 			}
 			if watchCtx.Err() != nil {
 				result.Outcome = "timeout"
+				if err = stream.finish(); err != nil {
+					return nil, watchPipelineResult{}, err
+				}
 				return nil, result, nil
 			}
 			return nil, watchPipelineResult{}, err
@@ -87,10 +111,29 @@ func (t *tools) watchPipeline(ctx context.Context, req *mcp.CallToolRequest, in 
 		}
 		prev = view
 		result.Pipeline = &view
-		if token := req.Params.GetProgressToken(); token != nil {
-			err = req.Session.NotifyProgress(watchCtx, &mcp.ProgressNotificationParams{ProgressToken: token, Progress: float64(poll), Message: summary(view)})
+		if token != nil {
+			err = notify(summary(view))
 			if err != nil {
 				t.log.WarnContext(ctx, "sending pipeline progress", "error", err)
+			}
+		}
+		logReads := 0
+		if stream != nil {
+			if err == nil {
+				logReads, err = t.watchLogs(watchCtx, in, p, view, stream, notify)
+			}
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil, watchPipelineResult{}, ctx.Err()
+				}
+				if watchCtx.Err() == nil {
+					return nil, watchPipelineResult{}, err
+				}
+				result.Outcome = "timeout"
+				if err = stream.finish(); err != nil {
+					return nil, watchPipelineResult{}, err
+				}
+				return nil, result, nil
 			}
 		}
 
@@ -103,14 +146,48 @@ func (t *tools) watchPipeline(ctx context.Context, req *mcp.CallToolRequest, in 
 		if result.Outcome != "" {
 			return nil, result, nil
 		}
-		select {
-		case <-watchCtx.Done():
-			if err = ctx.Err(); err != nil {
+		heartbeat := time.Duration(0)
+		if stream != nil {
+			heartbeat = t.pollInterval
+		}
+		// Log reads slow API polling without slowing the progress heartbeat.
+		err = waitForWatchPoll(watchCtx, t.pollInterval*time.Duration(2+logReads)/2, heartbeat,
+			func() error { return notify(summary(view)) })
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, watchPipelineResult{}, ctx.Err()
+			}
+			if watchCtx.Err() == nil {
 				return nil, watchPipelineResult{}, err
 			}
 			result.Outcome = "timeout"
+			if err = stream.finish(); err != nil {
+				return nil, watchPipelineResult{}, err
+			}
 			return nil, result, nil
-		case <-time.After(t.pollInterval):
+		}
+	}
+}
+
+func waitForWatchPoll(ctx context.Context, delay, heartbeat time.Duration, notify func() error) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	var ticks <-chan time.Time
+	if heartbeat > 0 && heartbeat < delay {
+		ticker := time.NewTicker(heartbeat)
+		defer ticker.Stop()
+		ticks = ticker.C
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return nil
+		case <-ticks:
+			if err := notify(); err != nil {
+				return err
+			}
 		}
 	}
 }
