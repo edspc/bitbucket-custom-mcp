@@ -29,11 +29,12 @@ type watchLogChunk struct {
 }
 
 type watchLogState struct {
-	end     int64
-	seen    bool
-	done    bool
-	pending string
-	chunk   watchLogChunk
+	end         int64
+	seen        bool
+	done        bool
+	unavailable bool
+	pending     string
+	chunk       watchLogChunk
 }
 
 type watchLogStream struct {
@@ -75,6 +76,7 @@ func (t *tools) watchLogs(ctx context.Context, in watchPipelineInput, p bitbucke
 		reads++
 		raw, start, err := t.bb.StepLogTail(ctx, in.Repo, p.UUID, step.UUID, watchLogReadBytes)
 		if bitbucket.IsStatus(err, http.StatusNotFound) {
+			state.unavailable = true
 			if final || strings.HasPrefix(step.State, "COMPLETED") {
 				state.chunk.Unavailable = true
 				state.done = true
@@ -87,6 +89,7 @@ func (t *tools) watchLogs(ctx context.Context, in watchPipelineInput, p bitbucke
 		if err != nil {
 			return reads, err
 		}
+		state.unavailable = false
 		state.add(raw, start)
 		state.done = final || strings.HasPrefix(step.State, "COMPLETED")
 		if err = stream.flush(state, state.done, notify); err != nil {
@@ -173,8 +176,8 @@ func (s *watchLogStream) finish() error {
 		return nil
 	}
 	for _, state := range s.steps {
-		if state.pending != "" {
-			state.chunk.Truncated, state.chunk.Unavailable = false, false
+		if state.pending != "" || state.unavailable && !state.done {
+			state.chunk.Truncated, state.chunk.Unavailable = false, state.unavailable
 			if err := s.flush(state, true, nil); err != nil {
 				return err
 			}
