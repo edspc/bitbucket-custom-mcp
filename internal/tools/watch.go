@@ -111,6 +111,12 @@ func (t *tools) watchPipeline(ctx context.Context, req *mcp.CallToolRequest, in 
 		}
 		prev = view
 		result.Pipeline = &view
+		switch {
+		case p.State.Completed():
+			result.Outcome = "completed"
+		case p.State.Paused():
+			result.Outcome = "paused"
+		}
 		if token != nil {
 			err = notify(summary(view))
 			if err != nil {
@@ -129,7 +135,9 @@ func (t *tools) watchPipeline(ctx context.Context, req *mcp.CallToolRequest, in 
 				if watchCtx.Err() == nil {
 					return nil, watchPipelineResult{}, err
 				}
-				result.Outcome = "timeout"
+				if result.Outcome == "" {
+					result.Outcome = "timeout"
+				}
 				if err = stream.finish(); err != nil {
 					return nil, watchPipelineResult{}, err
 				}
@@ -137,12 +145,6 @@ func (t *tools) watchPipeline(ctx context.Context, req *mcp.CallToolRequest, in 
 			}
 		}
 
-		switch {
-		case p.State.Completed():
-			result.Outcome = "completed"
-		case p.State.Paused():
-			result.Outcome = "paused"
-		}
 		if result.Outcome != "" {
 			return nil, result, nil
 		}
