@@ -233,16 +233,28 @@ func TestWatchLogGapsResetsAndBoundedResult(t *testing.T) {
 }
 
 func TestWatchLogDeadlineAndAPIErrors(t *testing.T) {
-	for _, status := range []int{0, http.StatusForbidden} {
-		t.Run(map[int]string{0: "deadline", http.StatusForbidden: "forbidden"}[status], func(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		state   bitbucket.State
+		status  int
+		outcome string
+	}{
+		{name: "running deadline", state: running(), outcome: "timeout"},
+		{name: "completed deadline", state: completed("SUCCESSFUL"), outcome: "completed"},
+		{name: "paused deadline", state: bitbucket.State{Name: "IN_PROGRESS", Stage: &bitbucket.StateDetail{Name: "PAUSED"}}, outcome: "paused"},
+		{name: "running forbidden", state: running(), status: http.StatusForbidden},
+		{name: "completed forbidden", state: completed("SUCCESSFUL"), status: http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			f := newFake()
-			twoSteps(f)
+			p := twoSteps(f)
+			f.setState(p, tc.state)
 			cs := connect(t, f, nil)
 			upstream := f.handler(t)
 			h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.HasSuffix(r.URL.Path, "/log") {
-					if status != 0 {
-						w.WriteHeader(status)
+					if tc.status != 0 {
+						w.WriteHeader(tc.status)
 						return
 					}
 					<-r.Context().Done()
@@ -258,13 +270,13 @@ func TestWatchLogDeadlineAndAPIErrors(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if status != 0 {
+			if tc.status != 0 {
 				if !res.IsError {
 					t.Fatalf("call=%+v", res)
 				}
 			} else {
 				got := decodeResult[watchPipelineResult](t, res.Content[0].(*mcp.TextContent).Text)
-				if got.Outcome != "timeout" || got.Pipeline == nil || time.Since(start) > 1500*time.Millisecond {
+				if got.Outcome != tc.outcome || got.Pipeline == nil || got.Pipeline.State != tc.state.String() || time.Since(start) > 1500*time.Millisecond {
 					t.Fatalf("result=%+v", got)
 				}
 			}
